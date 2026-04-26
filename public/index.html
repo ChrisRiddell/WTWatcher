@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WTWatcher | Network Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
+  <script type="importmap">
+    {
+      "imports": {
+        "chart.js/auto": "https://cdn.jsdelivr.net/npm/chart.js/auto/+esm",
+        "luxon": "https://cdn.jsdelivr.net/npm/luxon/+esm"
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="scripts.js" defer></script>
+</head>
+<body>
+  <div class="dashboard-container">
+    <!-- Header -->
+    <header>
+      <div class="branding">
+        <h1>Network Monitor</h1>
+        <p>IT REALLY SLAPS THE ALPACA'S RUMP!</p>
+      </div>
+      <div class="controls">
+        <div class="control-group">
+          <label>Protocol</label>
+          <select id="protocolFilter">
+            <option value="Both">Both</option>
+            <option value="IPv4">IPv4</option>
+            <option value="IPv6">IPv6</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Date</label>
+          <select id="dateFilter">
+            <option disabled selected>Loading...</option>
+          </select>
+        </div>
+      </div>
+    </header>
+
+    <!-- Error/Loading/Empty States -->
+    <div id="statusContainer" class="hidden">
+      <div id="errorAlert" class="status-msg hidden" style="background: rgba(255,0,0,0.2); border: 1px solid red;">
+        Failed to load monitoring data.
+      </div>
+      <div id="emptyAlert" class="status-msg hidden" style="background: rgba(0,255,255,0.1); border: 1px solid cyan;">
+        No data available for selected filters.
+      </div>
+      <div id="loadingSkeleton" class="status-msg hidden">
+        Loading system metrics...
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <main id="mainContent">
+      <!-- Instrument Grid -->
+      <section id="latencyCardsContainer" class="metrics-grid">
+        <!-- Dynamically populated instrument boxes -->
+
+        <!-- Placeholder for Speedtest (rendered by JS) -->
+        <div id="speedtestCard" class="instrument-box hidden">
+           <div class="instrument-label">
+             <span>SPEEDTEST.NET</span>
+             <div class="speed-indicators">
+                <span class="indicator" style="color: var(--neon-blue)">↓ DL</span>
+                <span class="indicator" style="color: var(--neon-orange)">↑ UL</span>
+             </div>
+           </div>
+           <div class="speed-values">
+             <span id="latestDownload" class="instrument-value speed-dl">--</span>
+             <span class="instrument-value" style="color: #444">/</span>
+             <span id="latestUpload" class="instrument-value speed-ul">--</span>
+             <span class="instrument-unit">Mbps</span>
+           </div>
+           <div class="instrument-footer" id="speedtestTime">CURRENT SPEED</div>
+        </div>
+      </section>
+
+      <!-- Charts Section -->
+      <section class="charts-section">
+        <div class="chart-container">
+          <!--<div class="instrument-label">Historical Latency (ms)</div>-->
+          <div class="chart-wrapper">
+            <canvas id="latencyChart"></canvas>
+          </div>
+          <div class="instrument-footer">HISTORICAL LATENCY</div>
+        </div>
+
+        <div id="speedtestChartSection" class="chart-container hidden">
+          <!--<div class="instrument-label">Speedtest History (Mbps)</div>-->
+          <div class="chart-wrapper">
+            <canvas id="speedtestChart"></canvas>
+          </div>
+          <div class="instrument-footer">SPEEDTEST</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

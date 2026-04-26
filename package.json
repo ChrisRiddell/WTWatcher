@@ -1,0 +1,17 @@
+{
+  "name": "wtwatcher",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/chart.js": "^2.9.41",
+    "@types/luxon": "^3.7.5",
+    "chart.js": "^4.5.1",
+    "luxon": "^3.7.2",
+    "typescript": "^7.0.2"
+  }
+}
