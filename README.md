@@ -2,6 +2,11 @@
 
 WTWatcher is a robust, decoupled agent-based network monitoring application that tracks network latency, packet loss, and bandwidth throughput over time. It features a lightweight Go backend with an asynchronous task scheduler and a clean, responsive TypeScript/TailwindCSS frontend dashboard.
 
+# TO FIX!!
+
+1. Charts time axis needs to be decoupled speedtest ran at 18:30:16 and ping ran at 18:30:00 you get a 18:30:16 empty point on the latency chart.
+2. Speedtest chart download and upload colours don't match the speedtest card.
+
 ## Features
 
 - **Ping Agent (Latency Tracking):** Continuously monitors ICMP latency and packet loss against configured endpoints (supports both IPv4 and IPv6). Automatically handles privilege escalation and fallback.
