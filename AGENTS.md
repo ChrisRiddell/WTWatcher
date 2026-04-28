@@ -17,11 +17,10 @@ WTWatcher/
 │       ├── scheduler.go           # Task scheduler for interval-based execution
 │       └── server.go              # Simple HTTP server for the dashboard
 ├── ui/                     # Frontend Source Code
-│   ├── input.css           # Tailwind base styles
 │   └── scripts.ts          # Frontend TypeScript logic (Chart.js, Luxon)
 ├── public/                 # Compiled/Static Frontend Assets
 │   ├── index.html          # Dashboard entry point
-│   ├── styles.css          # Compiled Tailwind CSS
+│   ├── styles.css          # CSS
 │   └── scripts.js          # Compiled JS
 ├── archive/                # Historical metrics (rotated daily)
 ├── log/                    # Log files
@@ -34,8 +33,8 @@ WTWatcher/
 ## Tech Stack Overview
 
 *   **Backend:** Go (Golang)
-*   **Frontend:** HTML, TypeScript, CSS (TailwindCSS)
-*   **UI Libraries:** DaisyUI, Chart.js, Luxon
+*   **Frontend:** HTML, TypeScript, CSS
+*   **UI Libraries:** Chart.js, Luxon
 *   **Core Dependencies:** `prometheus-community/pro-bing` (ICMP checks), gopkg.in/yaml.v3 (YAML parsing)
 *   **External CLI:** Ookla Speedtest CLI
 
@@ -43,8 +42,8 @@ WTWatcher/
 
 ### Frontend
 Managed via `npm` scripts defined in `package.json`:
-*   `npm run build`: Compiles the raw `ui/scripts.ts` and `ui/input.css` into the static `public/` directory (`styles.css` and `scripts.js`).
-*   `npm run watch`: Runs the TypeScript compiler and Tailwind CLI in parallel watch mode, automatically rebuilding assets when source files change.
+*   `npm run build`: Compiles the raw `ui/scripts.ts` into the static `public/` directory (`scripts.js`).
+*   `npm run watch`: Runs the TypeScript compiler in parallel watch mode, automatically rebuilding assets when source files change.
 
 ### Backend
 Executed via the `go run` command (or as a compiled binary):
@@ -104,18 +103,3 @@ The Web Server provides the delivery mechanism for the user interface and the un
     *   **Static Serving:** Hosts the compiled frontend application (`index.html`, CSS, JS) from the `./public` directory.
     *   **Data Exposure:** Makes the live `metrics.json` accessible to the frontend dashboard for parsing and visualization.
     *   **Configuration:** Listens on standard IPv4 loopback (`127.0.0.1`) using a user-configurable port (default: 8080) provided via command-line arguments.
-
-## Frontend UI (`ui/` & `public/`)
-
-While not a traditional backend agent, the UI acts as the client-side consumer of the collected metrics.
-
-*   **Role:** Visualization dashboard for network metrics.
-*   **Tech Stack:**
-    *   **TypeScript:** For logic, filtering, and data parsing.
-    *   **TailwindCSS & DaisyUI:** For styling, component structure, and theming (e.g., dynamic light/dark mode toggling).
-    *   **Chart.js:** For visualizing latency trends and speedtest histories over time.
-    *   **Luxon:** For robust UTC-to-local timezone conversions to ensure data matches the user's browser clock.
-*   **Responsibilities:**
-    *   **Data Fetching & Normalization:** Consumes `metrics.json`, converting UTC timestamps into local dates for the interface.
-    *   **Dynamic View:** Selectively displays content based on available data, hiding empty states (such as omitting the speedtest charts if no test has run today). Includes micro-animations (e.g., pulsing alerts for high latency).
-    *   **Filtering:** Provides drop-downs to filter by specific historical dates or specific protocols (IPv4 vs. IPv6).

@@ -1,6 +1,6 @@
 ---
 Schedule:
-    Ping: 5 Minutes # Minutes or Hours
+    Ping: 50 Minutes # Minutes or Hours
     Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
     Archiving: 14 Days # Minutes, Hours or Days
 

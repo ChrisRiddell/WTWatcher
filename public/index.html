@@ -1,10 +1,12 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="sunset">
-
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Network Monitoring Dashboard</title>
+  <title>WTWatcher | Network Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
   <script type="importmap">
     {
       "imports": {
@@ -16,111 +18,89 @@
   <link rel="stylesheet" href="styles.css">
   <script type="module" src="scripts.js" defer></script>
 </head>
-
-<body class="min-h-screen bg-base-200">
-  <div class="container mx-auto p-4 max-w-7xl">
-
-    <!-- Header & Controls -->
-    <header class="navbar bg-base-100 rounded-box shadow-sm mb-6 flex-col md:flex-row gap-4 p-4">
-      <div class="flex-1">
-        <h1 class="text-2xl font-bold">Wedge Tailed Monitor</h1>
+<body>
+  <div class="dashboard-container">
+    <!-- Header -->
+    <header>
+      <div class="branding">
+        <h1>Network Monitor</h1>
+        <p>IT REALLY SLAPS THE ALPACA'S RUMP!</p>
       </div>
-      <div class="flex-none gap-4 flex-wrap w-full md:w-auto">
-        <!-- Date Filter -->
-        <select id="dateFilter" class="select select-bordered w-full md:w-auto">
-          <option disabled selected>Loading Dates...</option>
-        </select>
-
-        <!-- Protocol Filter -->
-        <select id="protocolFilter" class="select select-bordered w-full md:w-auto">
-          <option value="Both">Both Protocols</option>
-          <option value="IPv4">IPv4</option>
-          <option value="IPv6">IPv6</option>
-        </select>
+      <div class="controls">
+        <div class="control-group">
+          <label>Protocol</label>
+          <select id="protocolFilter">
+            <option value="Both">Both</option>
+            <option value="IPv4">IPv4</option>
+            <option value="IPv6">IPv6</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Date</label>
+          <select id="dateFilter">
+            <option disabled selected>Loading...</option>
+          </select>
+        </div>
       </div>
     </header>
 
     <!-- Error/Loading/Empty States -->
-    <div id="statusContainer" class="hidden mb-6">
-      <div class="alert alert-error hidden" id="errorAlert">
-        <svg xmlns="http://www.w3.org/2000/svg" class="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <span id="errorMessage">Failed to load monitoring data.</span>
+    <div id="statusContainer" class="hidden">
+      <div id="errorAlert" class="status-msg hidden" style="background: rgba(255,0,0,0.2); border: 1px solid red;">
+        Failed to load monitoring data.
       </div>
-      <div class="alert alert-info hidden" id="emptyAlert">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-6 h-6">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-        </svg>
-        <span id="emptyMessage">No data available for selected filters.</span>
+      <div id="emptyAlert" class="status-msg hidden" style="background: rgba(0,255,255,0.1); border: 1px solid cyan;">
+        No data available for selected filters.
       </div>
-      <div class="flex flex-col gap-4 hidden" id="loadingSkeleton">
-        <div class="skeleton h-32 w-full"></div>
-        <div class="skeleton h-64 w-full"></div>
+      <div id="loadingSkeleton" class="status-msg hidden">
+        Loading system metrics...
       </div>
     </div>
 
-    <!-- Main Content Grid -->
-    <main class="grid grid-cols-1 lg:grid-cols-3 gap-6" id="mainContent">
+    <!-- Main Content -->
+    <main id="mainContent">
+      <!-- Instrument Grid -->
+      <section id="latencyCardsContainer" class="metrics-grid">
+        <!-- Dynamically populated instrument boxes -->
+        
+        <!-- Placeholder for Speedtest (rendered by JS) -->
+        <div id="speedtestCard" class="instrument-box hidden">
+           <div class="instrument-label">
+             <span>SPEEDTEST.NET</span>
+             <div class="speed-indicators">
+                <span class="indicator" style="color: var(--neon-blue)">↓ DL</span>
+                <span class="indicator" style="color: var(--neon-orange)">↑ UL</span>
+             </div>
+           </div>
+           <div class="speed-values">
+             <span id="latestDownload" class="instrument-value speed-dl">--</span>
+             <span class="instrument-value" style="color: #444">/</span>
+             <span id="latestUpload" class="instrument-value speed-ul">--</span>
+             <span class="instrument-unit">Mbps</span>
+           </div>
+           <div class="instrument-footer" id="speedtestTime">CURRENT SPEED</div>
+        </div>
+      </section>
 
-      <!-- Left Column: Cards -->
-      <div class="flex flex-col gap-6 lg:col-span-1">
-        <!-- Speedtest Card -->
-        <section id="speedtestCard" class="card bg-base-100 shadow-sm border border-base-200">
-          <div class="card-body">
-            <h2 class="card-title text-lg">Latest Speedtest</h2>
-            <div class="grid grid-cols-2 gap-4 mt-2" id="speedtestSummary">
-              <div class="stat p-0">
-                <div class="stat-title">Download</div>
-                <div class="stat-value text-primary text-2xl" id="latestDownload">-- Mbps</div>
-              </div>
-              <div class="stat p-0">
-                <div class="stat-title">Upload</div>
-                <div class="stat-value text-secondary text-2xl" id="latestUpload">-- Mbps</div>
-              </div>
-            </div>
-            <div class="text-xs text-base-content/50 mt-2" id="speedtestTime">--</div>
+      <!-- Charts Section -->
+      <section class="charts-section">
+        <div class="chart-container">
+          <div class="instrument-label">Historical Latency (ms)</div>
+          <div class="chart-wrapper">
+            <canvas id="latencyChart"></canvas>
           </div>
-        </section>
+          <div class="instrument-footer">HISTORICAL LATENCY</div>
+        </div>
 
-        <!-- Latency Warnings Container -->
-        <section class="card bg-base-100 shadow-sm border border-base-200">
-          <div class="card-body">
-            <h2 class="card-title text-lg mb-2">Latency Status</h2>
-            <div id="latencyCardsContainer" class="flex flex-col gap-3">
-              <!-- Dynamically populated cards will go here -->
-            </div>
+        <div id="speedtestChartSection" class="chart-container hidden">
+          <div class="instrument-label">Speedtest History (Mbps)</div>
+          <div class="chart-wrapper">
+            <canvas id="speedtestChart"></canvas>
           </div>
-        </section>
-      </div>
-
-      <!-- Right Column: Charts -->
-      <div class="flex flex-col gap-6 lg:col-span-2">
-        <!-- Latency Chart -->
-        <section class="card bg-base-100 shadow-sm border border-base-200">
-          <div class="card-body">
-            <h2 class="card-title text-lg">Latency Over Time</h2>
-            <div class="w-full h-80 relative">
-              <canvas id="latencyChart"></canvas>
-            </div>
-          </div>
-        </section>
-
-        <!-- Speedtest Chart -->
-        <section id="speedtestChartSection" class="card bg-base-100 shadow-sm border border-base-200">
-          <div class="card-body">
-            <h2 class="card-title text-lg">Speedtest History</h2>
-            <div class="w-full h-80 relative">
-              <canvas id="speedtestChart"></canvas>
-            </div>
-          </div>
-        </section>
-      </div>
-
+          <div class="instrument-footer">SPEEDTEST</div>
+        </div>
+      </section>
     </main>
   </div>
 </body>
-
 </html>

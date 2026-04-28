@@ -17,7 +17,6 @@ const $ = (id) => document.getElementById(id);
 const ui = {
     dateFilter: $('dateFilter'),
     protocolFilter: $('protocolFilter'),
-    problemOnlyToggle: $('problemOnlyToggle'),
     status: $('statusContainer'),
     error: $('errorAlert'),
     empty: $('emptyAlert'),
@@ -38,17 +37,17 @@ function getCSSVar(name, fallback = '') {
 }
 function getThemeColors() {
     return {
-        text: getCSSVar('--chart-text', '#1f2937'),
-        grid: getCSSVar('--chart-grid', 'rgba(0,0,0,0.1)')
+        text: getCSSVar('--chart-text', '#ffffff'),
+        grid: getCSSVar('--chart-grid', 'rgba(255,255,255,0.1)')
     };
 }
 function getChartPalette() {
     return [
-        getCSSVar('--chart-c1', '#60a5fa'),
-        getCSSVar('--chart-c2', '#34d399'),
-        getCSSVar('--chart-c3', '#f59e0b'),
-        getCSSVar('--chart-c4', '#f87171'),
-        getCSSVar('--chart-c5', '#a78bfa'),
+        getCSSVar('--chart-c1', '#00d2ff'),
+        getCSSVar('--chart-c2', '#39ff14'),
+        getCSSVar('--chart-c3', '#ff9900'),
+        getCSSVar('--chart-c4', '#ff4d4d'),
+        getCSSVar('--chart-c5', '#a349eb'),
         getCSSVar('--chart-c6', '#22d3ee')
     ];
 }
@@ -72,7 +71,8 @@ function normalizeLatency(latency) {
     for (const [target, entries] of Object.entries(latency)) {
         result[target] = entries.map(e => ({
             average: e.Average ?? e.average ?? 0,
-            protocol: (e.Protocol ?? e.protocol ?? 'IPv4')
+            protocol: (e.Protocol ?? e.protocol ?? 'IPv4'),
+            packetLoss: e.PacketLoss ?? e.packetLoss ?? 0
         }));
     }
     return result;
@@ -103,16 +103,17 @@ function getFilteredData() {
             protocol === 'Both' ||
             Object.values(d.latency).some(entries => entries.some(e => e.protocol === protocol))));
 }
-function buildLatencyHistory(data, protocol) {
+function buildLatencyHistory(data) {
     const history = new Map();
     data.forEach(d => {
         Object.entries(d.latency ?? {}).forEach(([target, entries]) => {
+            if (!history.has(target))
+                history.set(target, new Map());
+            const targetHistory = history.get(target);
             entries.forEach(e => {
-                if (protocol !== 'Both' && e.protocol !== protocol)
-                    return;
-                if (!history.has(target))
-                    history.set(target, []);
-                history.get(target).push(e.average);
+                if (!targetHistory.has(e.protocol))
+                    targetHistory.set(e.protocol, []);
+                targetHistory.get(e.protocol).push(e.average);
             });
         });
     });
@@ -121,18 +122,31 @@ function buildLatencyHistory(data, protocol) {
 function findLatestLatencyPoint(data) {
     return [...data].reverse().find(d => d.latency);
 }
-function computeLatencyStats(target, history, latestPoint, protocol) {
-    const values = history.get(target);
-    const baselineAvg = values.reduce((a, b) => a + b, 0) / values.length;
+function computeLatencyStats(target, history, latestPoint, protocolFilter) {
+    const targetHistory = history.get(target);
     const rawLatestEntries = latestPoint.latency?.[target] ?? [];
-    const latestEntries = protocol === 'Both'
+    const latestEntries = (protocolFilter === 'Both'
         ? rawLatestEntries
-        : rawLatestEntries.filter(e => e.protocol === protocol);
+        : rawLatestEntries.filter(e => e.protocol === protocolFilter))
+        .map(e => {
+        const protoValues = targetHistory.get(e.protocol) || [e.average];
+        const protoBaseline = protoValues.reduce((a, b) => a + b, 0) / protoValues.length;
+        const d = e.average - protoBaseline;
+        const s = getLatencyStatus(protoBaseline, e.average, d);
+        return { ...e, ...s, baseline: protoBaseline };
+    });
     const latest = latestEntries.length > 0
         ? latestEntries.reduce((a, b) => a + b.average, 0) / latestEntries.length
         : 0;
-    const delta = latest > 0 ? latest - baselineAvg : 0;
-    return { baselineAvg, latest, delta, latestEntries };
+    let overallStatus = { cls: 'status-success', label: 'Normal' };
+    latestEntries.forEach(e => {
+        if (e.cls === 'status-error')
+            overallStatus = { cls: 'status-error', label: 'High' };
+        else if (e.cls === 'status-warning' && overallStatus.cls !== 'status-error') {
+            overallStatus = { cls: 'status-warning', label: 'Elevated' };
+        }
+    });
+    return { latest, latestEntries, ...overallStatus };
 }
 function getLatencyStatus(baselineAvg, latest, delta) {
     if (latest === 0)
@@ -147,15 +161,16 @@ function getLatencyStatus(baselineAvg, latest, delta) {
     return { cls: 'status-success', label: 'Normal' };
 }
 function computeAllLatencyStats(data, protocol) {
-    const history = buildLatencyHistory(data, protocol);
+    const history = buildLatencyHistory(data);
     const latestPoint = findLatestLatencyPoint(data);
     if (!history.size || !latestPoint)
         return [];
-    return Array.from(history.keys()).sort().map(target => {
-        const stats = computeLatencyStats(target, history, latestPoint, protocol);
-        const status = getLatencyStatus(stats.baselineAvg, stats.latest, stats.delta);
-        return { target, ...stats, ...status };
-    });
+    return Array.from(history.keys())
+        .sort()
+        .map(target => {
+        return { target, ...computeLatencyStats(target, history, latestPoint, protocol) };
+    })
+        .filter(stat => stat.latestEntries.length > 0);
 }
 function getCachedLatencyStats(data, protocol) {
     if (!data.length)
@@ -167,51 +182,57 @@ function getCachedLatencyStats(data, protocol) {
     latencyCache.set(key, result);
     return result;
 }
-function filterProblematicOnly(stats, enabled) {
-    if (!enabled)
-        return stats;
-    return stats.filter(s => s.cls === 'status-warning' || s.cls === 'status-error');
-}
 function renderLatencyCard(container, target, stat) {
     const el = document.createElement('div');
-    el.className = 'flex justify-between p-3 bg-base-200 rounded-lg';
-    const isAnimated = stat.cls === 'status-error' || stat.cls === 'status-warning';
-    const statusIndicator = isAnimated
-        ? `
-    <div class="inline-grid *:[grid-area:1/1]">
-      <div class="status ${stat.cls} animate-ping"></div>
-      <div class="status ${stat.cls}"></div>
-    </div>
-  `
-        : `<span class="status ${stat.cls}"></span>`;
+    el.className = 'instrument-box';
+    const entries = stat.latestEntries || [];
+    const protocolTags = entries
+        .map((e) => `<span class="protocol-tag">${e.protocol}</span>`)
+        .join('');
+    const lossValue = entries.reduce((acc, e) => acc + e.packetLoss, 0) || 0;
+    const lossTag = lossValue > 0 ? `<span class="loss-tag">${lossValue.toFixed(1)}% LOSS</span>` : '';
+    let valuesHtml = '';
+    if (entries.length > 1) {
+        valuesHtml = entries.map((e) => `
+      <div style="font-size: 1.2rem; display: flex; justify-content: space-between; align-items: baseline; width: 100%;">
+        <span style="font-size: 0.7rem; color: var(--text-muted);">${e.protocol}</span>
+        <span class="${e.cls}">${e.average.toFixed(2)}<span class="instrument-unit">ms</span></span>
+      </div>
+    `).join('');
+    }
+    else {
+        valuesHtml = `
+      <div class="instrument-value ${stat.cls}">
+        ${stat.latest.toFixed(2)} <span class="instrument-unit">ms</span>
+      </div>
+    `;
+    }
     el.innerHTML = `
-    <div class="flex items-center gap-3">
-      ${statusIndicator}
+    <div class="instrument-label">
       <span>${target}</span>
-    </div>
-    <div class="text-right">
-     <div class="font-bold">
-  ${stat.latestEntries?.length
-        ? stat.latestEntries
-            .map((e) => `${e.protocol}: ${e.average.toFixed(2)} <span class="text-xs">ms</span>`)
-            .join('<br />')
-        : `${stat.latest.toFixed(2)} <span class="text-xs">ms</span>`}
-</div>
-      <div class="text-xs opacity-60">
-        avg ${stat.baselineAvg.toFixed(2)} ms • ${stat.label}
+      <div style="display: flex; gap: 4px; align-items: center;">
+        ${lossTag}
+        ${protocolTags}
       </div>
     </div>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1;">
+      ${valuesHtml}
+    </div>
+    <div class="instrument-footer">CURRENT LATENCY</div>
   `;
     container.appendChild(el);
 }
-function updateLatencyCards(data, protocol, problematicOnly = false) {
+function updateLatencyCards(data, protocol) {
+    const speedCard = ui.speedCard;
     ui.latencyCards.innerHTML = '';
-    const stats = filterProblematicOnly(getCachedLatencyStats(data, protocol), problematicOnly);
-    if (!stats.length) {
-        ui.latencyCards.textContent = problematicOnly
-            ? 'No latency issues detected 🎉'
-            : 'No latency data.';
-        return;
+    if (speedCard)
+        ui.latencyCards.appendChild(speedCard);
+    const stats = getCachedLatencyStats(data, protocol);
+    if (!stats.length && (!speedCard || speedCard.classList.contains('hidden'))) {
+        const msg = document.createElement('div');
+        msg.style.gridColumn = '1 / -1';
+        msg.textContent = 'No latency data.';
+        ui.latencyCards.appendChild(msg);
     }
     stats.forEach(stat => {
         renderLatencyCard(ui.latencyCards, stat.target, stat);
@@ -220,14 +241,15 @@ function updateLatencyCards(data, protocol, problematicOnly = false) {
 function updateSpeedCard(data) {
     const latest = [...data].reverse().find(d => d.speedtest);
     if (!latest?.speedtest) {
-        ui.speedCard.classList.add('hidden');
-        ui.speedSection.classList.add('hidden');
+        ui.speedCard?.classList.add('hidden');
+        ui.speedSection?.classList.add('hidden');
         return;
     }
-    ui.speedCard.classList.remove('hidden');
-    ui.latestDownload.textContent = `${latest.speedtest.download.toFixed(0)} Mbps`;
-    ui.latestUpload.textContent = `${latest.speedtest.upload.toFixed(0)} Mbps`;
-    ui.speedTime.textContent = `At ${latest.dt.toFormat('HH:mm:ss')}`;
+    ui.speedCard?.classList.remove('hidden');
+    ui.speedSection?.classList.remove('hidden');
+    ui.latestDownload.textContent = latest.speedtest.download.toFixed(0);
+    ui.latestUpload.textContent = latest.speedtest.upload.toFixed(0);
+    ui.speedTime.textContent = `LAST TEST AT ${latest.dt.toFormat('HH:mm:ss')}`;
 }
 function destroyCharts() {
     Object.values(charts).forEach(c => c?.destroy());
@@ -240,6 +262,7 @@ function renderCharts(data, protocol) {
     const palette = getChartPalette();
     Chart.defaults.color = text;
     Chart.defaults.borderColor = grid;
+    Chart.defaults.font.family = 'Inter';
     const latencyCtx = $('latencyChart');
     const labels = data.map(d => d.dt.toFormat('HH:mm:ss'));
     const targetMap = {};
@@ -265,8 +288,10 @@ function renderCharts(data, protocol) {
                     label: k,
                     data: v,
                     borderColor: color,
-                    backgroundColor: withOpacity(color, 0.2),
-                    tension: 0.25,
+                    backgroundColor: withOpacity(color, 0.1),
+                    borderWidth: 2,
+                    pointRadius: 2,
+                    tension: 0.3,
                     spanGaps: true
                 };
             })
@@ -274,62 +299,67 @@ function renderCharts(data, protocol) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            scales: {
-                x: { grid: { color: grid } },
-                y: { grid: { color: grid } }
+            plugins: {
+                legend: { position: 'top', align: 'start', labels: { boxWidth: 10, font: { size: 10 } } }
             },
-            interaction: {
-                mode: 'index',
-                intersect: false
-            }
+            scales: {
+                x: { grid: { color: grid }, ticks: { font: { size: 9 } } },
+                y: { grid: { color: grid }, ticks: { font: { size: 10 } } }
+            },
+            interaction: { mode: 'index', intersect: false }
         }
     });
     const speed = data.filter(d => d.speedtest);
-    const hasSpeed = speed.length > 0;
-    ui.speedSection.classList.toggle('hidden', !hasSpeed);
-    if (!hasSpeed) {
-        charts.speedtest = null;
-        return;
-    }
-    const speedCtx = $('speedtestChart');
-    charts.speedtest = new Chart(speedCtx, {
-        type: 'bar',
-        data: {
-            labels: speed.map(d => d.dt.toFormat('HH:mm:ss')),
-            datasets: [
-                {
-                    label: 'Download',
-                    data: speed.map(d => d.speedtest.download),
-                    backgroundColor: getCSSVar('--chart-c1')
-                },
-                {
-                    label: 'Upload',
-                    data: speed.map(d => d.speedtest.upload),
-                    backgroundColor: getCSSVar('--chart-c2')
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-                x: { grid: { color: grid } },
-                y: { grid: { color: grid } }
+    if (speed.length > 0) {
+        ui.speedSection?.classList.remove('hidden');
+        const speedCtx = $('speedtestChart');
+        charts.speedtest = new Chart(speedCtx, {
+            type: 'line',
+            data: {
+                labels: speed.map(d => d.dt.toFormat('HH:mm:ss')),
+                datasets: [
+                    {
+                        label: 'Download',
+                        data: speed.map(d => d.speedtest.download),
+                        borderColor: getCSSVar('--neon-blue'),
+                        backgroundColor: withOpacity(getCSSVar('--neon-blue'), 0.1),
+                        borderWidth: 3,
+                        tension: 0.4,
+                        fill: true
+                    },
+                    {
+                        label: 'Upload',
+                        data: speed.map(d => d.speedtest.upload),
+                        borderColor: getCSSVar('--neon-orange'),
+                        backgroundColor: withOpacity(getCSSVar('--neon-orange'), 0.1),
+                        borderWidth: 3,
+                        tension: 0.4,
+                        fill: true
+                    }
+                ]
             },
-            interaction: {
-                mode: 'index',
-                intersect: false
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { legend: { position: 'top', align: 'start' } },
+                scales: {
+                    x: { grid: { color: grid }, ticks: { font: { size: 9 } } },
+                    y: { grid: { color: grid }, ticks: { font: { size: 10 } } }
+                },
+                interaction: { mode: 'index', intersect: false }
             }
-        }
-    });
+        });
+    }
+    else {
+        ui.speedSection?.classList.add('hidden');
+    }
 }
 function populateFilters() {
     ui.dateFilter.innerHTML = localDates
         .map(d => `<option value="${d}">${d}</option>`)
         .join('');
-    if (!ui.dateFilter.value && localDates.length) {
+    if (!ui.dateFilter.value && localDates.length)
         ui.dateFilter.value = localDates[0];
-    }
 }
 function applyFilters() {
     const data = getFilteredData();
@@ -337,13 +367,12 @@ function applyFilters() {
         return setView('empty');
     setView('content');
     updateSpeedCard(data);
-    updateLatencyCards(data, ui.protocolFilter.value, ui.problemOnlyToggle?.checked);
+    updateLatencyCards(data, ui.protocolFilter.value);
     renderCharts(data, ui.protocolFilter.value);
 }
 function initFilters() {
     ui.dateFilter.addEventListener('change', applyFilters);
     ui.protocolFilter.addEventListener('change', applyFilters);
-    ui.problemOnlyToggle?.addEventListener('change', applyFilters);
 }
 async function load() {
     setView('loading');
@@ -360,6 +389,5 @@ async function load() {
         setView('error');
     }
 }
-// --- Init ---
 initFilters();
 load();

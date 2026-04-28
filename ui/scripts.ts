@@ -15,11 +15,14 @@ interface RawLatencyEntry {
   average?: number;
   Protocol?: string;
   protocol?: string;
+  PacketLoss?: number;
+  packetLoss?: number;
 }
 
 interface NormalizedLatencyEntry {
   average: number;
   protocol: 'IPv4' | 'IPv6';
+  packetLoss: number;
 }
 
 type LatencyTarget = Record<string, NormalizedLatencyEntry[]>;
@@ -38,7 +41,7 @@ let charts = {
   speedtest: null as Chart | null
 };
 
-const latencyCache = new Map<string, ReturnType<typeof computeAllLatencyStats>>();
+const latencyCache = new Map<string, any[]>();
 
 const $ = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
@@ -46,7 +49,6 @@ const $ = <T extends HTMLElement>(id: string) =>
 const ui = {
   dateFilter: $('dateFilter') as HTMLSelectElement,
   protocolFilter: $('protocolFilter') as HTMLSelectElement,
-  problemOnlyToggle: $('problemOnlyToggle') as HTMLInputElement,
 
   status: $('statusContainer'),
   error: $('errorAlert'),
@@ -72,18 +74,18 @@ function getCSSVar(name: string, fallback = '') {
 
 function getThemeColors() {
   return {
-    text: getCSSVar('--chart-text', '#1f2937'),
-    grid: getCSSVar('--chart-grid', 'rgba(0,0,0,0.1)')
+    text: getCSSVar('--chart-text', '#ffffff'),
+    grid: getCSSVar('--chart-grid', 'rgba(255,255,255,0.1)')
   };
 }
 
 function getChartPalette() {
   return [
-    getCSSVar('--chart-c1', '#60a5fa'),
-    getCSSVar('--chart-c2', '#34d399'),
-    getCSSVar('--chart-c3', '#f59e0b'),
-    getCSSVar('--chart-c4', '#f87171'),
-    getCSSVar('--chart-c5', '#a78bfa'),
+    getCSSVar('--chart-c1', '#00d2ff'),
+    getCSSVar('--chart-c2', '#39ff14'),
+    getCSSVar('--chart-c3', '#ff9900'),
+    getCSSVar('--chart-c4', '#ff4d4d'),
+    getCSSVar('--chart-c5', '#a349eb'),
     getCSSVar('--chart-c6', '#22d3ee')
   ];
 }
@@ -111,7 +113,8 @@ function normalizeLatency(latency?: Record<string, RawLatencyEntry[]>): LatencyT
   for (const [target, entries] of Object.entries(latency)) {
     result[target] = entries.map(e => ({
       average: e.Average ?? e.average ?? 0,
-      protocol: (e.Protocol ?? e.protocol ?? 'IPv4') as 'IPv4' | 'IPv6'
+      protocol: (e.Protocol ?? e.protocol ?? 'IPv4') as 'IPv4' | 'IPv6',
+      packetLoss: e.PacketLoss ?? e.packetLoss ?? 0
     }));
   }
 
@@ -156,16 +159,17 @@ function getFilteredData() {
   );
 }
 
-function buildLatencyHistory(data: ParsedDataPoint[], protocol: string) {
-  const history = new Map<string, number[]>();
+function buildLatencyHistory(data: ParsedDataPoint[]) {
+  const history = new Map<string, Map<string, number[]>>();
 
   data.forEach(d => {
     Object.entries(d.latency ?? {}).forEach(([target, entries]) => {
-      entries.forEach(e => {
-        if (protocol !== 'Both' && e.protocol !== protocol) return;
+      if (!history.has(target)) history.set(target, new Map());
+      const targetHistory = history.get(target)!;
 
-        if (!history.has(target)) history.set(target, []);
-        history.get(target)!.push(e.average);
+      entries.forEach(e => {
+        if (!targetHistory.has(e.protocol)) targetHistory.set(e.protocol, []);
+        targetHistory.get(e.protocol)!.push(e.average);
       });
     });
   });
@@ -179,26 +183,38 @@ function findLatestLatencyPoint(data: ParsedDataPoint[]) {
 
 function computeLatencyStats(
   target: string,
-  history: Map<string, number[]>,
+  history: Map<string, Map<string, number[]>>,
   latestPoint: ParsedDataPoint,
-  protocol: string
+  protocolFilter: string
 ) {
-  const values = history.get(target)!;
-  const baselineAvg = values.reduce((a, b) => a + b, 0) / values.length;
-
+  const targetHistory = history.get(target)!;
   const rawLatestEntries = latestPoint.latency?.[target] ?? [];
 
-  const latestEntries = protocol === 'Both'
+  const latestEntries = (protocolFilter === 'Both'
     ? rawLatestEntries
-    : rawLatestEntries.filter(e => e.protocol === protocol);
+    : rawLatestEntries.filter(e => e.protocol === protocolFilter))
+    .map(e => {
+      const protoValues = targetHistory.get(e.protocol) || [e.average];
+      const protoBaseline = protoValues.reduce((a, b) => a + b, 0) / protoValues.length;
+      
+      const d = e.average - protoBaseline;
+      const s = getLatencyStatus(protoBaseline, e.average, d);
+      return { ...e, ...s, baseline: protoBaseline };
+    });
 
   const latest = latestEntries.length > 0
     ? latestEntries.reduce((a, b) => a + b.average, 0) / latestEntries.length
     : 0;
 
-  const delta = latest > 0 ? latest - baselineAvg : 0;
+  let overallStatus = { cls: 'status-success', label: 'Normal' };
+  latestEntries.forEach(e => {
+    if (e.cls === 'status-error') overallStatus = { cls: 'status-error', label: 'High' };
+    else if (e.cls === 'status-warning' && overallStatus.cls !== 'status-error') {
+      overallStatus = { cls: 'status-warning', label: 'Elevated' };
+    }
+  });
 
-  return { baselineAvg, latest, delta, latestEntries };
+  return { latest, latestEntries, ...overallStatus };
 }
 
 function getLatencyStatus(baselineAvg: number, latest: number, delta: number) {
@@ -218,17 +234,17 @@ function getLatencyStatus(baselineAvg: number, latest: number, delta: number) {
 }
 
 function computeAllLatencyStats(data: ParsedDataPoint[], protocol: string) {
-  const history = buildLatencyHistory(data, protocol);
+  const history = buildLatencyHistory(data);
   const latestPoint = findLatestLatencyPoint(data);
 
   if (!history.size || !latestPoint) return [];
 
-  return Array.from(history.keys()).sort().map(target => {
-    const stats = computeLatencyStats(target, history, latestPoint, protocol);
-    const status = getLatencyStatus(stats.baselineAvg, stats.latest, stats.delta);
-
-    return { target, ...stats, ...status };
-  });
+  return Array.from(history.keys())
+    .sort()
+    .map(target => {
+      return { target, ...computeLatencyStats(target, history, latestPoint, protocol) };
+    })
+    .filter(stat => stat.latestEntries.length > 0);
 }
 
 function getCachedLatencyStats(data: ParsedDataPoint[], protocol: string) {
@@ -244,66 +260,64 @@ function getCachedLatencyStats(data: ParsedDataPoint[], protocol: string) {
   return result;
 }
 
-function filterProblematicOnly(stats: ReturnType<typeof computeAllLatencyStats>, enabled: boolean) {
-  if (!enabled) return stats;
-  return stats.filter(s => s.cls === 'status-warning' || s.cls === 'status-error');
-}
-
 function renderLatencyCard(container: HTMLElement, target: string, stat: any) {
   const el = document.createElement('div');
-  el.className = 'flex justify-between p-3 bg-base-200 rounded-lg';
+  el.className = 'instrument-box';
 
-  const isAnimated = stat.cls === 'status-error' || stat.cls === 'status-warning';
+  const entries = stat.latestEntries || [];
+  
+  const protocolTags = entries
+    .map((e: any) => `<span class="protocol-tag">${e.protocol}</span>`)
+    .join('');
 
-  const statusIndicator = isAnimated
-    ? `
-    <div class="inline-grid *:[grid-area:1/1]">
-      <div class="status ${stat.cls} animate-ping"></div>
-      <div class="status ${stat.cls}"></div>
-    </div>
-  `
-    : `<span class="status ${stat.cls}"></span>`;
+  const lossValue = entries.reduce((acc: number, e: any) => acc + e.packetLoss, 0) || 0;
+  const lossTag = lossValue > 0 ? `<span class="loss-tag">${lossValue.toFixed(1)}% LOSS</span>` : '';
+
+  let valuesHtml = '';
+  if (entries.length > 1) {
+    valuesHtml = entries.map((e: any) => `
+      <div style="font-size: 1.2rem; display: flex; justify-content: space-between; align-items: baseline; width: 100%;">
+        <span style="font-size: 0.7rem; color: var(--text-muted);">${e.protocol}</span>
+        <span class="${e.cls}">${e.average.toFixed(2)}<span class="instrument-unit">ms</span></span>
+      </div>
+    `).join('');
+  } else {
+    valuesHtml = `
+      <div class="instrument-value ${stat.cls}">
+        ${stat.latest.toFixed(2)} <span class="instrument-unit">ms</span>
+      </div>
+    `;
+  }
 
   el.innerHTML = `
-    <div class="flex items-center gap-3">
-      ${statusIndicator}
+    <div class="instrument-label">
       <span>${target}</span>
-    </div>
-    <div class="text-right">
-     <div class="font-bold">
-  ${stat.latestEntries?.length
-      ? stat.latestEntries
-        .map((e: NormalizedLatencyEntry) => `${e.protocol}: ${e.average.toFixed(2)} <span class="text-xs">ms</span>`)
-        .join('<br />')
-      : `${stat.latest.toFixed(2)} <span class="text-xs">ms</span>`
-    }
-</div>
-      <div class="text-xs opacity-60">
-        avg ${stat.baselineAvg.toFixed(2)} ms • ${stat.label}
+      <div style="display: flex; gap: 4px; align-items: center;">
+        ${lossTag}
+        ${protocolTags}
       </div>
     </div>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1;">
+      ${valuesHtml}
+    </div>
+    <div class="instrument-footer">CURRENT LATENCY</div>
   `;
 
   container.appendChild(el);
 }
 
-function updateLatencyCards(
-  data: ParsedDataPoint[],
-  protocol: string,
-  problematicOnly = false
-) {
+function updateLatencyCards(data: ParsedDataPoint[], protocol: string) {
+  const speedCard = ui.speedCard;
   ui.latencyCards.innerHTML = '';
+  if (speedCard) ui.latencyCards.appendChild(speedCard);
 
-  const stats = filterProblematicOnly(
-    getCachedLatencyStats(data, protocol),
-    problematicOnly
-  );
+  const stats = getCachedLatencyStats(data, protocol);
 
-  if (!stats.length) {
-    ui.latencyCards.textContent = problematicOnly
-      ? 'No latency issues detected 🎉'
-      : 'No latency data.';
-    return;
+  if (!stats.length && (!speedCard || speedCard.classList.contains('hidden'))) {
+    const msg = document.createElement('div');
+    msg.style.gridColumn = '1 / -1';
+    msg.textContent = 'No latency data.';
+    ui.latencyCards.appendChild(msg);
   }
 
   stats.forEach(stat => {
@@ -315,16 +329,17 @@ function updateSpeedCard(data: ParsedDataPoint[]) {
   const latest = [...data].reverse().find(d => d.speedtest);
 
   if (!latest?.speedtest) {
-    ui.speedCard.classList.add('hidden');
-    ui.speedSection.classList.add('hidden');
+    ui.speedCard?.classList.add('hidden');
+    ui.speedSection?.classList.add('hidden');
     return;
   }
 
-  ui.speedCard.classList.remove('hidden');
+  ui.speedCard?.classList.remove('hidden');
+  ui.speedSection?.classList.remove('hidden');
 
-  ui.latestDownload.textContent = `${latest.speedtest.download.toFixed(0)} Mbps`;
-  ui.latestUpload.textContent = `${latest.speedtest.upload.toFixed(0)} Mbps`;
-  ui.speedTime.textContent = `At ${latest.dt.toFormat('HH:mm:ss')}`;
+  ui.latestDownload.textContent = latest.speedtest.download.toFixed(0);
+  ui.latestUpload.textContent = latest.speedtest.upload.toFixed(0);
+  ui.speedTime.textContent = `LAST TEST AT ${latest.dt.toFormat('HH:mm:ss')}`;
 }
 
 function destroyCharts() {
@@ -341,9 +356,9 @@ function renderCharts(data: ParsedDataPoint[], protocol: string) {
 
   Chart.defaults.color = text;
   Chart.defaults.borderColor = grid;
+  Chart.defaults.font.family = 'Inter';
 
   const latencyCtx = $('latencyChart') as HTMLCanvasElement;
-
   const labels = data.map(d => d.dt.toFormat('HH:mm:ss'));
   const targetMap: Record<string, (number | null)[]> = {};
 
@@ -351,9 +366,7 @@ function renderCharts(data: ParsedDataPoint[], protocol: string) {
     Object.entries(d.latency ?? {}).forEach(([target, entries]) => {
       entries.forEach(e => {
         if (protocol !== 'Both' && e.protocol !== protocol) return;
-
         const key = protocol === 'Both' ? `${target} (${e.protocol})` : target;
-
         if (!targetMap[key]) targetMap[key] = Array(data.length).fill(null);
         targetMap[key][i] = e.average;
       });
@@ -366,13 +379,14 @@ function renderCharts(data: ParsedDataPoint[], protocol: string) {
       labels,
       datasets: Object.entries(targetMap).map(([k, v], i) => {
         const color = palette[i % palette.length];
-
         return {
           label: k,
           data: v,
           borderColor: color,
-          backgroundColor: withOpacity(color, 0.2),
-          tension: 0.25,
+          backgroundColor: withOpacity(color, 0.1),
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.3,
           spanGaps: true
         };
       })
@@ -380,104 +394,89 @@ function renderCharts(data: ParsedDataPoint[], protocol: string) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      scales: {
-        x: { grid: { color: grid } },
-        y: { grid: { color: grid } }
+      plugins: {
+        legend: { position: 'top', align: 'start', labels: { boxWidth: 10, font: { size: 10 } } }
       },
-      interaction: {
-        mode: 'index',
-        intersect: false
-      }
+      scales: {
+        x: { grid: { color: grid }, ticks: { font: { size: 9 } } },
+        y: { grid: { color: grid }, ticks: { font: { size: 10 } } }
+      },
+      interaction: { mode: 'index', intersect: false }
     }
   });
 
   const speed = data.filter(d => d.speedtest);
-  const hasSpeed = speed.length > 0;
-
-  ui.speedSection.classList.toggle('hidden', !hasSpeed);
-
-  if (!hasSpeed) {
-    charts.speedtest = null;
-    return;
-  }
-
-  const speedCtx = $('speedtestChart') as HTMLCanvasElement;
-
-  charts.speedtest = new Chart(speedCtx, {
-    type: 'bar',
-    data: {
-      labels: speed.map(d => d.dt.toFormat('HH:mm:ss')),
-      datasets: [
-        {
-          label: 'Download',
-          data: speed.map(d => d.speedtest!.download),
-          backgroundColor: getCSSVar('--chart-c1')
-        },
-        {
-          label: 'Upload',
-          data: speed.map(d => d.speedtest!.upload),
-          backgroundColor: getCSSVar('--chart-c2')
-        }
-      ]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: { grid: { color: grid } },
-        y: { grid: { color: grid } }
+  if (speed.length > 0) {
+    ui.speedSection?.classList.remove('hidden');
+    const speedCtx = $('speedtestChart') as HTMLCanvasElement;
+    charts.speedtest = new Chart(speedCtx, {
+      type: 'line',
+      data: {
+        labels: speed.map(d => d.dt.toFormat('HH:mm:ss')),
+        datasets: [
+          {
+            label: 'Download',
+            data: speed.map(d => d.speedtest!.download),
+            borderColor: getCSSVar('--neon-blue'),
+            backgroundColor: withOpacity(getCSSVar('--neon-blue'), 0.1),
+            borderWidth: 3,
+            tension: 0.4,
+            fill: true
+          },
+          {
+            label: 'Upload',
+            data: speed.map(d => d.speedtest!.upload),
+            borderColor: getCSSVar('--neon-orange'),
+            backgroundColor: withOpacity(getCSSVar('--neon-orange'), 0.1),
+            borderWidth: 3,
+            tension: 0.4,
+            fill: true
+          }
+        ]
       },
-      interaction: {
-        mode: 'index',
-        intersect: false
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'top', align: 'start' } },
+        scales: {
+          x: { grid: { color: grid }, ticks: { font: { size: 9 } } },
+          y: { grid: { color: grid }, ticks: { font: { size: 10 } } }
+        },
+        interaction: { mode: 'index', intersect: false }
       }
-    }
-  });
+    });
+  } else {
+    ui.speedSection?.classList.add('hidden');
+  }
 }
 
 function populateFilters() {
   ui.dateFilter.innerHTML = localDates
     .map(d => `<option value="${d}">${d}</option>`)
     .join('');
-
-  if (!ui.dateFilter.value && localDates.length) {
-    ui.dateFilter.value = localDates[0];
-  }
+  if (!ui.dateFilter.value && localDates.length) ui.dateFilter.value = localDates[0];
 }
 
 function applyFilters() {
   const data = getFilteredData();
-
   if (!data.length) return setView('empty');
-
   setView('content');
-
   updateSpeedCard(data);
-
-  updateLatencyCards(
-    data,
-    ui.protocolFilter.value,
-    ui.problemOnlyToggle?.checked
-  );
-
+  updateLatencyCards(data, ui.protocolFilter.value);
   renderCharts(data, ui.protocolFilter.value);
 }
 
 function initFilters() {
   ui.dateFilter.addEventListener('change', applyFilters);
   ui.protocolFilter.addEventListener('change', applyFilters);
-  ui.problemOnlyToggle?.addEventListener('change', applyFilters);
 }
 
 async function load() {
   setView('loading');
-
   try {
     const res = await fetch('metrics.json');
     if (!res.ok) throw new Error();
-
     const json = await res.json();
-
     parseData(json);
     populateFilters();
     applyFilters();
@@ -486,6 +485,5 @@ async function load() {
   }
 }
 
-// --- Init ---
 initFilters();
 load();
