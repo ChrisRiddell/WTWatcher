@@ -100,7 +100,7 @@ header {
 }
 
 .control-group label {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   text-transform: uppercase;
   font-weight: bold;
@@ -110,10 +110,12 @@ select {
   background: #1a1a1a;
   color: white;
   border: 1px solid #333;
-  padding: 0.4rem 0.8rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  font-family: inherit;
   outline: none;
+  cursor: pointer;
 }
 
 .metrics-grid {
