@@ -13,6 +13,8 @@ bin/
 
 # Data and logs
 public/*.json
+public/*.tmp
+public/*.bak
 archive/
 /log/*.log
 

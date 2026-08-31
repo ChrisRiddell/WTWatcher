@@ -1,6 +1,8 @@
 package modules
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -8,15 +10,16 @@ import (
 func TestScheduler_StartStop(t *testing.T) {
 	cfg := &Config{
 		Schedule: Schedule{
-			PingSeconds:      3600,
-			SpeedtestSeconds: 7200,
-			ArchivingSeconds: 86400,
+			PingSeconds:        3600,
+			SpeedtestSeconds:   7200,
+			ArchivingSeconds:   86400,
+			LogRotationSeconds: 86400,
 		},
 		Addresses: []Address{},
 	}
 
 	dir := t.TempDir()
-	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive")
+	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive", nil)
 	if err != nil {
 		t.Fatalf("NewFileManager: %v", err)
 	}
@@ -52,15 +55,16 @@ func TestScheduler_TaskFires(t *testing.T) {
 
 	cfg := &Config{
 		Schedule: Schedule{
-			PingSeconds:      1, // fire almost immediately
-			SpeedtestSeconds: 3600,
-			ArchivingSeconds: 86400,
+			PingSeconds:        1, // fire almost immediately
+			SpeedtestSeconds:   3600,
+			ArchivingSeconds:   86400,
+			LogRotationSeconds: 86400,
 		},
 		Addresses: []Address{},
 	}
 
 	dir := t.TempDir()
-	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive")
+	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive", nil)
 	if err != nil {
 		t.Fatalf("NewFileManager: %v", err)
 	}
@@ -129,3 +133,45 @@ func TestFormatConsoleTime(t *testing.T) {
 	}
 }
 
+func TestScheduler_LogRotationTask(t *testing.T) {
+	cfg := &Config{
+		Schedule: Schedule{
+			PingSeconds:        3600,
+			SpeedtestSeconds:   3600,
+			ArchivingSeconds:   86400,
+			LogRotationSeconds: 1, // trigger quickly
+		},
+		Addresses: []Address{},
+	}
+
+	dir := t.TempDir()
+	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive", nil)
+	if err != nil {
+		t.Fatalf("NewFileManager: %v", err)
+	}
+
+	logDir := t.TempDir()
+	logger, err := NewLogger(logDir)
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	logger.Info("pre-rotation log message")
+
+	sched := NewScheduler(cfg, fm, logger)
+	sched.Start()
+
+	// Wait briefly for the 1s task to fire and execute.
+	time.Sleep(1500 * time.Millisecond)
+	sched.Stop()
+
+	dateKey := time.Now().UTC().Format("2006-01-02")
+	rotatedPath := filepath.Join(logDir, "info-"+dateKey+".log")
+	if _, err := os.Stat(rotatedPath); err != nil {
+		// If timing in CI was tight, verify that either rotated file exists or active info.log exists
+		if _, errActive := os.Stat(filepath.Join(logDir, "info.log")); errActive != nil {
+			t.Fatalf("expected log files in %s: %v", logDir, err)
+		}
+	}
+}

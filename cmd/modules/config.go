@@ -1,8 +1,8 @@
 package modules
 
 import (
+	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -13,17 +13,39 @@ import (
 
 // ─── raw YAML shapes ───────────────────────────────────────────────────────
 
+// rawConfig represents the unvalidated, raw structure decoded directly from config.yml.
 type rawConfig struct {
-	Schedule  rawSchedule             `yaml:"Schedule"`
-	Addresses map[string]rawAddress   `yaml:"Addresses"`
+	Schedule  rawSchedule        `yaml:"Schedule"`
+	Ping      rawPing            `yaml:"Ping"`
+	Speedtest rawSpeedtestConfig `yaml:"Speedtest"`
+	// Addresses is intentionally unmarshaled as a yaml.Node AST instead of a Go map.
+	// In Go, map iteration order is randomized by design; using yaml.Node allows us
+	// to iterate over the YAML MappingNode entries in the exact order the user authored them.
+	Addresses yaml.Node `yaml:"Addresses"`
 }
 
+// rawSchedule holds unparsed interval strings.
 type rawSchedule struct {
-	Ping      string `yaml:"Ping"`
-	Speedtest string `yaml:"Speedtest"`
-	Archiving string `yaml:"Archiving"`
+	Ping        string `yaml:"Ping"`
+	Speedtest   string `yaml:"Speedtest"`
+	Archiving   string `yaml:"Archiving"`
+	LogRotation string `yaml:"LogRotation"`
 }
 
+// rawSpeedtestConfig holds unparsed Speedtest parameters from config.yml.
+type rawSpeedtestConfig struct {
+	ServerID yaml.Node `yaml:"ServerID"`
+}
+
+// rawPing holds unparsed ping probe parameters and the anomaly threshold.
+type rawPing struct {
+	Count              int    `yaml:"Count"`
+	Timeout            string `yaml:"Timeout"`
+	Retries            *int   `yaml:"Retries"`
+	AnomalyThresholdMs int64  `yaml:"AnomalyThresholdMs"`
+}
+
+// rawAddress holds string values for an individual target under the Addresses section.
 type rawAddress struct {
 	IPv4     string `yaml:"IPv4"`
 	IPv6     string `yaml:"IPv6"`
@@ -33,31 +55,56 @@ type rawAddress struct {
 
 // ─── parsed / validated shapes ─────────────────────────────────────────────
 
-// Config is the validated, ready-to-use configuration.
+// Config is the validated, fully parsed configuration ready for runtime use.
 type Config struct {
 	Schedule  Schedule
+	Ping      Ping
+	Speedtest Speedtest
 	Addresses []Address
 }
 
-// Schedule holds interval durations in seconds.
+// Schedule holds validated interval durations converted into seconds for easy timer arithmetic.
 type Schedule struct {
-	PingSeconds      int64
-	SpeedtestSeconds int64
-	ArchivingSeconds int64
+	PingSeconds        int64
+	SpeedtestSeconds   int64
+	ArchivingSeconds   int64
+	LogRotationSeconds int64
 }
 
-// Address represents a single monitoring target.
+// Ping holds validated probe parameters and anomaly filtering settings for ICMP ping.
+type Ping struct {
+	Count          int
+	TimeoutSeconds int64
+	Retries        int
+	// AnomalyThresholdMs is the upper bound for realistic per-packet RTT in milliseconds.
+	// Any sample above Q3 + 1.5×IQR that also exceeds this ceiling is treated as an OS/scheduler
+	// spike (e.g. CPU contention, sleep/wake, GC stall) and marked as an anomaly. Default is 2000ms.
+	AnomalyThresholdMs int64
+}
+
+// Speedtest holds validated configuration parameters for Ookla Speedtest CLI.
+type Speedtest struct {
+	// ServerID is the target Ookla speedtest server identifier, or "AUTO" for automatic selection.
+	ServerID string
+}
+
+// IsAuto returns true if the server selection is set to automatic.
+func (s Speedtest) IsAuto() bool {
+	return s.ServerID == "" || strings.EqualFold(s.ServerID, "auto")
+}
+
+// Address represents a validated monitoring target with typed IP addresses or domain name.
 type Address struct {
 	Name     string
 	IPv4     *netip.Addr
 	IPv6     *netip.Addr
 	Domain   string
-	Protocol string // "IPv4", "IPv6", "Both", or "" (unused for raw IPs)
+	Protocol string // Target protocol for domains: "IPv4", "IPv6", or "Both"
 }
 
 // ─── public API ────────────────────────────────────────────────────────────
 
-// LoadConfig reads and validates the YAML file at path.
+// LoadConfig reads the YAML configuration file from disk, parses, and validates its contents.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -66,8 +113,8 @@ func LoadConfig(path string) (*Config, error) {
 	return ParseConfig(data)
 }
 
-// ParseConfig validates raw YAML bytes and returns a *Config. Exported so
-// tests can call it without needing a real file.
+// ParseConfig validates raw YAML bytes and returns a typed *Config.
+// This is exported so unit tests can test configuration parsing in-memory without filesystem access.
 func ParseConfig(data []byte) (*Config, error) {
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -79,46 +126,117 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	addrs, err := parseAddresses(raw.Addresses)
+	ping, err := parsePing(raw.Ping)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Config{Schedule: sched, Addresses: addrs}, nil
+	speedtest, err := parseSpeedtest(raw.Speedtest)
+	if err != nil {
+		return nil, err
+	}
+
+	addrs, err := parseAddresses(&raw.Addresses)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Config{Schedule: sched, Ping: ping, Speedtest: speedtest, Addresses: addrs}, nil
 }
 
 // ─── internal helpers ──────────────────────────────────────────────────────
 
+// parseSchedule validates each interval string and converts durations to whole seconds.
 func parseSchedule(r rawSchedule) (Schedule, error) {
-	ping, err := parseInterval(r.Ping, "Schedule.Ping")
+	ping, err := parsePingScheduleInterval(r.Ping, "Schedule.Ping")
 	if err != nil {
 		return Schedule{}, err
 	}
-	speedtest, err := parseInterval(r.Speedtest, "Schedule.Speedtest")
+	speedtest, err := parseSpeedtestScheduleInterval(r.Speedtest, "Schedule.Speedtest")
 	if err != nil {
 		return Schedule{}, err
 	}
-	archiving, err := parseInterval(r.Archiving, "Schedule.Archiving")
+	archiving, err := parseArchivingInterval(r.Archiving, "Schedule.Archiving")
 	if err != nil {
 		return Schedule{}, err
 	}
+	logRotation, err := parseLogRotationInterval(r.LogRotation, "Schedule.LogRotation")
+	if err != nil {
+		return Schedule{}, err
+	}
+
 	return Schedule{
-		PingSeconds:      ping,
-		SpeedtestSeconds: speedtest,
-		ArchivingSeconds: archiving,
+		PingSeconds:        ping,
+		SpeedtestSeconds:   speedtest,
+		ArchivingSeconds:   archiving,
+		LogRotationSeconds: logRotation,
 	}, nil
 }
 
-// parseInterval converts strings like "15 Minutes", "3 Hours", "14 Days"
-// into a whole number of seconds. It returns 0 if the string is "OFF".
-func parseInterval(s, field string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if strings.ToUpper(s) == "OFF" {
-		return 0, nil
+// parsePing validates probe parameters and anomaly filtering thresholds.
+func parsePing(r rawPing) (Ping, error) {
+	if r.Count <= 0 {
+		return Ping{}, fmt.Errorf("Ping.Count: must be a positive number of packets (e.g. 4)")
 	}
+
+	if r.Timeout == "" {
+		return Ping{}, fmt.Errorf("Ping.Timeout: duration string is required (e.g. \"10 Seconds\")")
+	}
+	timeoutSec, err := parsePingTimeoutInterval(r.Timeout, "Ping.Timeout")
+	if err != nil {
+		return Ping{}, err
+	}
+	if timeoutSec <= 0 {
+		return Ping{}, fmt.Errorf("Ping.Timeout: must be a positive duration (e.g. \"10 Seconds\")")
+	}
+
+	if r.Retries == nil {
+		return Ping{}, fmt.Errorf("Ping.Retries: must be specified (e.g. 2, or 0 to disable retries)")
+	}
+	if *r.Retries < 0 {
+		return Ping{}, fmt.Errorf("Ping.Retries: must be a non-negative integer (e.g. 2)")
+	}
+
+	if r.AnomalyThresholdMs <= 0 {
+		return Ping{}, fmt.Errorf("Ping.AnomalyThresholdMs: must be a positive number of milliseconds (e.g. 2000)")
+	}
+
+	return Ping{
+		Count:              r.Count,
+		TimeoutSeconds:     timeoutSec,
+		Retries:            *r.Retries,
+		AnomalyThresholdMs: r.AnomalyThresholdMs,
+	}, nil
+}
+
+// parseSpeedtest validates Ookla Speedtest configuration settings.
+func parseSpeedtest(r rawSpeedtestConfig) (Speedtest, error) {
+	if r.ServerID.Kind != 0 && r.ServerID.Kind != yaml.ScalarNode {
+		return Speedtest{}, fmt.Errorf("Speedtest.ServerID: must be a scalar value (e.g. AUTO or a numeric server ID)")
+	}
+
+	val := strings.TrimSpace(r.ServerID.Value)
+	if val == "" || strings.EqualFold(val, "auto") {
+		return Speedtest{ServerID: "AUTO"}, nil
+	}
+
+	// Ookla server IDs are positive numeric identifiers.
+	// Validate to ensure proper configuration and prevent arbitrary argument injection.
+	id, err := strconv.ParseUint(val, 10, 64)
+	if err != nil || id == 0 {
+		return Speedtest{}, fmt.Errorf("Speedtest.ServerID: invalid server ID %q (expected a positive integer or \"AUTO\")", val)
+	}
+
+	return Speedtest{ServerID: val}, nil
+}
+
+// parsePingScheduleInterval parses duration strings specifically for Schedule.Ping.
+// It supports "Minutes" and "Hours" with no option for "OFF".
+func parsePingScheduleInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
 	parts := strings.Fields(s)
 	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Minutes|Hours|Days\")", field, s)
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Minutes|Hours\")", field, s)
 	}
 	n, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || n <= 0 {
@@ -129,17 +247,129 @@ func parseInterval(s, field string) (int64, error) {
 		return n * 60, nil
 	case "hour", "hours":
 		return n * 3600, nil
-	case "day", "days":
-		return n * 86400, nil
 	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Minutes, Hours, or Days)", field, parts[1])
+		return 0, fmt.Errorf("%s: unknown unit %q (use Minutes or Hours)", field, parts[1])
 	}
 }
 
-func parseAddresses(raw map[string]rawAddress) ([]Address, error) {
-	addrs := make([]Address, 0, len(raw))
-	for name, r := range raw {
-		a, err := parseAddress(name, r)
+// parseSpeedtestScheduleInterval parses duration strings specifically for Schedule.Speedtest.
+// It supports "OFF" (returns 0) and "Hours".
+func parseSpeedtestScheduleInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "off") {
+		return 0, nil
+	}
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Hours\" or \"OFF\")", field, s)
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+	switch strings.ToLower(parts[1]) {
+	case "hour", "hours":
+		return n * 3600, nil
+	default:
+		return 0, fmt.Errorf("%s: unknown unit %q (use Hours or OFF)", field, parts[1])
+	}
+}
+
+// parseArchivingInterval parses duration strings specifically for Schedule.Archiving.
+// It supports "Days" with no option for "OFF".
+func parseArchivingInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Days\")", field, s)
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+	switch strings.ToLower(parts[1]) {
+	case "day", "days":
+		return n * 86400, nil
+	default:
+		return 0, fmt.Errorf("%s: unknown unit %q (use Days)", field, parts[1])
+	}
+}
+
+// parseLogRotationInterval parses duration strings specifically for Schedule.LogRotation.
+// It supports "OFF" (returns 0) and "Days".
+func parseLogRotationInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "off") {
+		return 0, nil
+	}
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Days\" or \"OFF\")", field, s)
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+	switch strings.ToLower(parts[1]) {
+	case "day", "days":
+		return n * 86400, nil
+	default:
+		return 0, fmt.Errorf("%s: unknown unit %q (use Days or OFF)", field, parts[1])
+	}
+}
+
+// parsePingTimeoutInterval parses duration strings specifically for Ping.Timeout.
+// It supports "Seconds" with no option for "OFF".
+func parsePingTimeoutInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Seconds\")", field, s)
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+	switch strings.ToLower(parts[1]) {
+	case "second", "seconds":
+		return n, nil
+	default:
+		return 0, fmt.Errorf("%s: unknown unit %q (use Seconds)", field, parts[1])
+	}
+}
+
+// parseAddresses walks the yaml.Node AST of the Addresses mapping in document order,
+// ensuring the ordered slice of Address objects matches the exact sequence in config.yml.
+func parseAddresses(node *yaml.Node) ([]Address, error) {
+	// Resolve YAML anchor or alias nodes if present.
+	n := node
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+
+	// An empty or null Addresses block is permitted (e.g. empty target list).
+	if n.Kind == 0 || n.Tag == "!!null" || len(n.Content) == 0 {
+		return nil, nil
+	}
+
+	if n.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("Addresses: expected a YAML mapping, got kind %v", n.Kind)
+	}
+
+	// In yaml.v3, MappingNode.Content contains interleaved key and value nodes: [key0, val0, key1, val1, ...]
+	addrs := make([]Address, 0, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		keyNode := n.Content[i]
+		valNode := n.Content[i+1]
+
+		name := keyNode.Value
+
+		var raw rawAddress
+		if err := valNode.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("Addresses.%s: %w", name, err)
+		}
+
+		a, err := parseAddress(name, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -148,6 +378,8 @@ func parseAddresses(raw map[string]rawAddress) ([]Address, error) {
 	return addrs, nil
 }
 
+// parseAddress validates individual target fields: parsing and verifying IP address formats,
+// validating domains, and verifying protocol choices ("IPv4", "IPv6", "Both").
 func parseAddress(name string, r rawAddress) (Address, error) {
 	a := Address{Name: name}
 
@@ -156,7 +388,7 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 		addr, err := netip.ParseAddr(strings.TrimSpace(r.IPv4))
 		if err != nil || !addr.Is4() {
 			if err == nil {
-				err = fmt.Errorf("not an IPv4 address")
+				err = errors.New("not an IPv4 address")
 			}
 			return Address{}, fmt.Errorf("Addresses.%s: invalid IPv4 address %q: %w", name, r.IPv4, err)
 		}
@@ -167,7 +399,7 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 		addr, err := netip.ParseAddr(strings.TrimSpace(r.IPv6))
 		if err != nil || !addr.Is6() {
 			if err == nil {
-				err = fmt.Errorf("not an IPv6 address")
+				err = errors.New("not an IPv6 address")
 			}
 			return Address{}, fmt.Errorf("Addresses.%s: invalid IPv6 address %q: %w", name, r.IPv6, err)
 		}
@@ -181,10 +413,10 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 		}
 		a.Domain = strings.TrimSpace(r.Domain)
 
-		// Protocol is only relevant for domain targets.
+		// Protocol option determines whether to ping IPv4, IPv6, or both DNS records.
 		proto := strings.TrimSpace(r.Protocol)
 		if proto == "" {
-			proto = "IPv4" // sensible default
+			proto = "IPv4" // Default to IPv4 if unspecified.
 		}
 		switch proto {
 		case "IPv4", "IPv6", "Both":
@@ -199,28 +431,27 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 	return a, nil
 }
 
-// validateDomain performs a lightweight structural check on a domain name.
+// validateDomain performs an offline syntactic validation of domain strings to avoid network lookups during config load.
 func validateDomain(domain string) error {
 	d := strings.TrimSpace(domain)
 	if d == "" {
-		return fmt.Errorf("domain must not be empty")
+		return errors.New("domain must not be empty")
 	}
-	// net.LookupHost is not called here so tests stay offline; instead we do a
-	// simple label-based structural check.
+	// Check for invalid whitespace within the domain name.
 	if strings.Contains(d, " ") {
 		return fmt.Errorf("invalid domain %q: contains spaces", d)
 	}
-	for _, label := range strings.Split(d, ".") {
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return fmt.Errorf("invalid domain %q: no dots", d)
+	}
+	for _, label := range labels {
 		if label == "" {
 			return fmt.Errorf("invalid domain %q: empty label", d)
 		}
 	}
-	// Quick sanity: must have at least one dot.
-	if !strings.Contains(d, ".") {
-		return fmt.Errorf("invalid domain %q: no dots", d)
-	}
-	// Use net.LookupCNAME offline parser indirectly: just try parsing as host.
-	if net.ParseIP(d) != nil {
+	// Ensure an IP address wasn't mistakenly entered in the Domain field.
+	if _, err := netip.ParseAddr(d); err == nil {
 		return fmt.Errorf("invalid domain %q: looks like an IP address", d)
 	}
 	return nil

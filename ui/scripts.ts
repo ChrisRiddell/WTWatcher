@@ -1,49 +1,77 @@
-import { Chart, ChartDataset } from 'chart.js/auto';
-import { DateTime } from 'luxon';
+import { Chart, ChartDataset } from "chart.js/auto";
+import { DateTime } from "luxon";
 
 // --- Types & Constants ---
 
-type Protocol = 'IPv4' | 'IPv6';
-type ProtocolFilter = Protocol | 'Both';
-type Theme = 'light' | 'dark' | 'system';
-type ResolvedTheme = Exclude<Theme, 'system'>;
-type ViewState = 'loading' | 'error' | 'empty' | 'content';
+// Protocol families supported for latency measurement targets.
+type Protocol = "IPv4" | "IPv6";
+type ProtocolFilter = Protocol | "IPv4 + IPv6";
 
+// Theme modes supported by the dashboard. Dark mode is the default.
+type Theme = "light" | "dark";
+
+// UI visual view states.
+type ViewState = "loading" | "error" | "empty" | "content";
+
+// Status badge styling and textual label based on latency degradation.
 type LatencyStatus = {
-  cls: 'status-ghost' | 'status-error' | 'status-warning' | 'status-success';
-  label: 'No Data' | 'High' | 'Elevated' | 'Normal';
+  cls: "status-ghost" | "status-error" | "status-warning" | "status-success";
+  label: "No Data" | "High" | "Elevated" | "Normal";
 };
 
-const DEFAULT_PROTOCOL: Protocol = 'IPv4';
+// Time filter options for filtering latency chart telemetry.
+type LatencyTimeFilter = "today" | "1h" | "5h" | "12h";
+
+const DEFAULT_TIME_FILTER: LatencyTimeFilter = "today";
+
+// Duration in milliseconds corresponding to each time filter option.
+// "today" indicates no duration cutoff within the selected day.
+const TIME_FILTER_DURATIONS: Record<
+  Exclude<LatencyTimeFilter, "today">,
+  number
+> = {
+  "1h": 1 * 60 * 60 * 1000,
+  "5h": 5 * 60 * 60 * 1000,
+  "12h": 12 * 60 * 60 * 1000,
+} as const;
+
+const DEFAULT_PROTOCOL: Protocol = "IPv4";
 const DEFAULT_PACKET_LOSS = 0;
 const DEFAULT_LATENCY = 0;
 
+// Threshold configuration for determining latency health status.
+// Health is evaluated against both an absolute delta (ms above baseline)
+// and a relative percentage increase (e.g. 75% or 35% above baseline).
 const LATENCY_CONFIG = {
   thresholds: {
-    high: { abs: 75, relative: 0.75 },
-    elevated: { abs: 35, relative: 0.35 }
-  }
+    high: { abs: 75, relative: 0.75 }, // Delta > max(75ms, 75% of baseline) => High
+    elevated: { abs: 35, relative: 0.35 }, // Delta > max(35ms, 35% of baseline) => Elevated
+  },
 } as const;
 
-const DEFAULT_CHART_TEXT = '#ffffff';
-const DEFAULT_CHART_GRID = 'rgba(255,255,255,0.1)';
+const DEFAULT_CHART_TEXT = "#ffffff";
+const DEFAULT_CHART_GRID = "rgba(255,255,255,0.1)";
 const DEFAULT_CHART_PALETTE = [
-  '#00d2ff',
-  '#39ff14',
-  '#ff9900',
-  '#ff4d4d',
-  '#a349eb',
-  '#22d3ee'
+  "#00d2ff",
+  "#39ff14",
+  "#ff9900",
+  "#ff4d4d",
+  "#a349eb",
+  "#22d3ee",
 ] as const;
 
-const METRICS_URL = 'metrics.json';
-const THEME_STORAGE_KEY = 'theme';
+const METRICS_URL = "metrics.json";
+const THEME_STORAGE_KEY = "theme";
+const DEFAULT_THEME: Theme = "dark";
+const ALL_LATENCY_TARGETS = "__all__" as const;
 
+// Speedtest bandwidth measurements in Mbps.
 interface SpeedtestEntry {
   download: number;
   upload: number;
 }
 
+// Raw unvalidated latency entry shape from JSON payload (handles PascalCase or camelCase).
 interface RawLatencyEntry {
   Average?: unknown;
   average?: unknown;
@@ -53,41 +81,48 @@ interface RawLatencyEntry {
   packetLoss?: unknown;
 }
 
+// Normalized and sanitized latency entry.
 interface NormalizedLatencyEntry {
   average: number;
   protocol: Protocol;
   packetLoss: number;
 }
 
+// Latency target mapping: target name -> array of measurements (one per protocol).
 type LatencyTarget = Record<string, NormalizedLatencyEntry[]>;
 
+// Raw entry format inside a time slot in metrics.json.
 interface RawDataEntry {
   speedtest?: unknown;
   latency?: unknown;
 }
 
+// Full raw payload schema: date ("yyyy-MM-dd") -> time ("HH:mm:ssZ") -> RawDataEntry.
 type RawDataPayload = Record<string, Record<string, RawDataEntry>>;
 
+// Parsed and localized data point ready for filtering and charting.
 interface ParsedDataPoint {
-  timestamp: number; // Epoch milliseconds for fast sorting/filtering.
-  formattedTime: string; // User-local HH:mm for charts and displays.
-  date: string; // User-local yyyy-MM-dd.
+  timestamp: number; // Epoch milliseconds for fast numeric sorting and date comparison.
+  formattedTime: string; // Formatted user-local time string (HH:mm) for chart axis labels.
+  date: string; // Formatted user-local date (yyyy-MM-dd) for daily dropdown filtering.
   speedtest?: SpeedtestEntry;
   latency?: LatencyTarget;
 }
 
+// Latency entry augmented with baseline comparisons and visual status class.
 interface LatencyStatEntry extends NormalizedLatencyEntry {
-  cls: LatencyStatus['cls'];
-  label: LatencyStatus['label'];
+  cls: LatencyStatus["cls"];
+  label: LatencyStatus["label"];
   baseline: number;
 }
 
+// Aggregated health metrics for a target instrument card.
 interface CalculatedLatencyStat {
   target: string;
   latest: number;
   latestEntries: LatencyStatEntry[];
-  cls: LatencyStatus['cls'];
-  label: LatencyStatus['label'];
+  cls: LatencyStatus["cls"];
+  label: LatencyStatus["label"];
 }
 
 interface ThemeColors {
@@ -100,9 +135,13 @@ interface ChartRegistry {
   speedtest: Chart | null;
 }
 
+// Cached references to static HTML DOM elements.
 interface UIElements {
   dateFilter: HTMLSelectElement;
   protocolFilter: HTMLSelectElement;
+  latencyTargetFilter: HTMLSelectElement;
+  latencyTimeFilter: HTMLSelectElement;
+  latencyTimeControlGroup: HTMLElement;
   themeToggle: HTMLButtonElement;
   status: HTMLElement;
   error: HTMLElement;
@@ -117,9 +156,10 @@ interface UIElements {
   speedTime: HTMLElement;
 }
 
+// Parallel data arrays aligned with chart timestamp labels.
 interface LatencySeries {
-  latency: Array<number | null>;
-  loss: Array<number | null>;
+  latency: Array<number | null>; // Latency values (ms), null if target wasn't probed at timestamp.
+  loss: Array<number | null>; // Packet loss percentages (0-100), null if 0% or unprobed.
 }
 
 interface LatencySeriesEntry extends LatencySeries {
@@ -129,35 +169,58 @@ interface LatencySeriesEntry extends LatencySeries {
 
 // --- State ---
 
+// In-memory collection of all localized data points across all dates.
 let rawData: ParsedDataPoint[] = [];
+// List of unique local dates available for selection in descending chronological order.
 let localDates: string[] = [];
+// Cached computed style declaration to avoid repeated expensive DOM style lookups.
 let styleCache: CSSStyleDeclaration | null = null;
 
+// Active Chart.js instances.
 const charts: ChartRegistry = {
   latency: null,
-  speedtest: null
+  speedtest: null,
 };
 
+// Memoization cache for computed latency stats keyed by `${date}|${protocol}|${dataLength}`.
 const latencyCache = new Map<string, CalculatedLatencyStat[]>();
 
 // --- Type Guards & Validation ---
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === "object" && value !== null;
 }
 
 function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 function isProtocol(value: unknown): value is Protocol {
-  return value === 'IPv4' || value === 'IPv6';
+  return value === "IPv4" || value === "IPv6";
 }
 
-function isTheme(value: unknown): value is Theme {
-  return value === 'light' || value === 'dark' || value === 'system';
+function isLatencyTimeFilter(value: unknown): value is LatencyTimeFilter {
+  return (
+    value === "today" ||
+    value === "1h" ||
+    value === "5h" ||
+    value === "12h"
+  );
 }
 
+// Safely retrieves and validates the active latency time filter value.
+// Only applies when viewing the current day; defaults to full day for previous days.
+function getLatencyTimeFilter(): LatencyTimeFilter {
+  const today = DateTime.now().toFormat("yyyy-MM-dd");
+  if (ui.dateFilter.value !== today) {
+    return DEFAULT_TIME_FILTER;
+  }
+
+  const value = ui.latencyTimeFilter.value;
+  return isLatencyTimeFilter(value) ? value : DEFAULT_TIME_FILTER;
+}
+
+// Validates numeric values and guarantees non-negative finite results.
 function toNonNegativeFiniteNumber(value: unknown, fallback: number): number {
   return isFiniteNumber(value) && value >= 0 ? value : fallback;
 }
@@ -166,6 +229,7 @@ function normalizeProtocol(value: unknown): Protocol {
   return isProtocol(value) ? value : DEFAULT_PROTOCOL;
 }
 
+// Validates and extracts speedtest upload/download values.
 function parseSpeedtestEntry(value: unknown): SpeedtestEntry | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -186,6 +250,7 @@ function parseRawLatencyEntry(value: unknown): RawLatencyEntry | undefined {
   return isRecord(value) ? value : undefined;
 }
 
+// Normalizes latency entries from raw JSON, handling property case variations and clamping packet loss (0-100).
 function normalizeLatency(latency: unknown): LatencyTarget | undefined {
   if (!isRecord(latency)) return undefined;
 
@@ -207,13 +272,13 @@ function normalizeLatency(latency: unknown): LatencyTarget | undefined {
       const average = toNonNegativeFiniteNumber(rawAverage, DEFAULT_LATENCY);
       const packetLoss = Math.min(
         100,
-        toNonNegativeFiniteNumber(rawPacketLoss, DEFAULT_PACKET_LOSS)
+        toNonNegativeFiniteNumber(rawPacketLoss, DEFAULT_PACKET_LOSS),
       );
 
       entries.push({
         average,
         protocol: normalizeProtocol(rawProtocol),
-        packetLoss
+        packetLoss,
       });
     }
 
@@ -225,9 +290,10 @@ function normalizeLatency(latency: unknown): LatencyTarget | undefined {
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+// Validates the top-level structure of the metrics payload.
 function parseRawDataPayload(value: unknown): RawDataPayload {
   if (!isRecord(value)) {
-    throw new Error('Metrics payload must be a JSON object.');
+    throw new Error("Metrics payload must be a JSON object.");
   }
 
   const result: RawDataPayload = Object.create(null) as RawDataPayload;
@@ -235,13 +301,16 @@ function parseRawDataPayload(value: unknown): RawDataPayload {
   for (const [dateKey, rawTimes] of Object.entries(value)) {
     if (!isRecord(rawTimes)) continue;
 
-    const times: Record<string, RawDataEntry> = Object.create(null) as Record<string, RawDataEntry>;
+    const times: Record<string, RawDataEntry> = Object.create(null) as Record<
+      string,
+      RawDataEntry
+    >;
 
     for (const [timeKey, rawEntry] of Object.entries(rawTimes)) {
       if (!isRecord(rawEntry)) continue;
       times[timeKey] = {
         speedtest: rawEntry.speedtest,
-        latency: rawEntry.latency
+        latency: rawEntry.latency,
       };
     }
 
@@ -255,6 +324,7 @@ function parseRawDataPayload(value: unknown): RawDataPayload {
 
 // --- DOM Helpers ---
 
+// Retrieves a required DOM element by ID and asserts its type, throwing if not found.
 function getElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (!element) {
@@ -264,28 +334,32 @@ function getElement<T extends HTMLElement>(id: string): T {
 }
 
 const ui: UIElements = {
-  dateFilter: getElement<HTMLSelectElement>('dateFilter'),
-  protocolFilter: getElement<HTMLSelectElement>('protocolFilter'),
-  themeToggle: getElement<HTMLButtonElement>('themeToggle'),
+  dateFilter: getElement<HTMLSelectElement>("dateFilter"),
+  protocolFilter: getElement<HTMLSelectElement>("protocolFilter"),
+  latencyTargetFilter: getElement<HTMLSelectElement>("latencyTargetFilter"),
+  latencyTimeFilter: getElement<HTMLSelectElement>("latencyTimeFilter"),
+  latencyTimeControlGroup: getElement<HTMLElement>("latencyTimeControlGroup"),
+  themeToggle: getElement<HTMLButtonElement>("themeToggle"),
 
-  status: getElement<HTMLElement>('statusContainer'),
-  error: getElement<HTMLElement>('errorAlert'),
-  empty: getElement<HTMLElement>('emptyAlert'),
-  loading: getElement<HTMLElement>('loadingSkeleton'),
-  main: getElement<HTMLElement>('mainContent'),
+  status: getElement<HTMLElement>("statusContainer"),
+  error: getElement<HTMLElement>("errorAlert"),
+  empty: getElement<HTMLElement>("emptyAlert"),
+  loading: getElement<HTMLElement>("loadingSkeleton"),
+  main: getElement<HTMLElement>("mainContent"),
 
-  speedCard: getElement<HTMLElement>('speedtestCard'),
-  speedSection: getElement<HTMLElement>('speedtestChartSection'),
-  latencyCards: getElement<HTMLElement>('latencyCardsContainer'),
+  speedCard: getElement<HTMLElement>("speedtestCard"),
+  speedSection: getElement<HTMLElement>("speedtestChartSection"),
+  latencyCards: getElement<HTMLElement>("latencyCardsContainer"),
 
-  latestDownload: getElement<HTMLElement>('latestDownload'),
-  latestUpload: getElement<HTMLElement>('latestUpload'),
-  speedTime: getElement<HTMLElement>('speedtestTime')
+  latestDownload: getElement<HTMLElement>("latestDownload"),
+  latestUpload: getElement<HTMLElement>("latestUpload"),
+  speedTime: getElement<HTMLElement>("speedtestTime"),
 };
 
 // --- CSS Helpers ---
 
-function getCSSVar(name: string, fallback = ''): string {
+// Reads a CSS custom property from :root, using an in-memory cache to minimize DOM reflows.
+function getCSSVar(name: string, fallback = ""): string {
   if (!styleCache) {
     styleCache = getComputedStyle(document.documentElement);
   }
@@ -294,25 +368,28 @@ function getCSSVar(name: string, fallback = ''): string {
   return value || fallback;
 }
 
+// Retrieves active theme text and grid lines colors for Chart.js.
 function getThemeColors(): ThemeColors {
   return {
-    text: getCSSVar('--chart-text', DEFAULT_CHART_TEXT),
-    grid: getCSSVar('--chart-grid', DEFAULT_CHART_GRID)
+    text: getCSSVar("--chart-text", DEFAULT_CHART_TEXT),
+    grid: getCSSVar("--chart-grid", DEFAULT_CHART_GRID),
   };
 }
 
+// Retrieves the distinct multi-series color palette defined in CSS.
 function getChartPalette(): string[] {
   return DEFAULT_CHART_PALETTE.map((fallback, index) =>
-    getCSSVar(`--chart-c${index + 1}`, fallback)
+    getCSSVar(`--chart-c${index + 1}`, fallback),
   );
 }
 
+// Converts an rgb(...) color string to rgba(..., opacity) for chart background fills.
 function withOpacity(color: string, opacity = 0.2): string {
   if (!Number.isFinite(opacity)) return color;
 
   const clampedOpacity = Math.min(1, Math.max(0, opacity));
   const rgbMatch = color.match(
-    /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i
+    /^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i,
   );
 
   if (!rgbMatch) return color;
@@ -320,65 +397,118 @@ function withOpacity(color: string, opacity = 0.2): string {
   return `rgba(${rgbMatch[1]}, ${rgbMatch[2]}, ${rgbMatch[3]}, ${clampedOpacity})`;
 }
 
+// Controls visibility of UI state containers (loading skeleton, error box, empty message, content).
 function setView(state: ViewState): void {
-  ui.status.classList.toggle('hidden', state === 'content');
-  ui.loading.classList.toggle('hidden', state !== 'loading');
-  ui.error.classList.toggle('hidden', state !== 'error');
-  ui.empty.classList.toggle('hidden', state !== 'empty');
-  ui.main.classList.toggle('hidden', state !== 'content');
+  ui.status.classList.toggle("hidden", state === "content");
+  ui.loading.classList.toggle("hidden", state !== "loading");
+  ui.error.classList.toggle("hidden", state !== "error");
+  ui.empty.classList.toggle("hidden", state !== "empty");
+  ui.main.classList.toggle("hidden", state !== "content");
 }
 
 // --- Data Parsing ---
 
+// Converts the raw UTC JSON data from metrics.json into chronological local time data points.
 function parseData(json: RawDataPayload): void {
   const localDateSet = new Set<string>();
   const parsedPoints: ParsedDataPoint[] = [];
 
   for (const [dateKey, times] of Object.entries(json)) {
     for (const [timeKey, entry] of Object.entries(times)) {
-      // Convert the source UTC timestamp to the user's local timezone.
+      // Parse ISO UTC timestamp ("yyyy-MM-ddTHH:mm:ssZ") and convert to client's local timezone.
       const dt = DateTime.fromISO(`${dateKey}T${timeKey}`, {
-        zone: 'utc'
+        zone: "utc",
       }).toLocal();
 
       if (!dt.isValid) continue;
 
-      const userLocalDate = dt.toFormat('yyyy-MM-dd');
+      const userLocalDate = dt.toFormat("yyyy-MM-dd");
       localDateSet.add(userLocalDate);
 
       parsedPoints.push({
         timestamp: dt.toMillis(),
-        formattedTime: dt.toFormat('HH:mm'),
+        formattedTime: dt.toFormat("HH:mm"),
         date: userLocalDate,
         speedtest: parseSpeedtest(entry.speedtest),
-        latency: normalizeLatency(entry.latency)
+        latency: normalizeLatency(entry.latency),
       });
     }
   }
 
+  // Sort strictly ascending by timestamp.
   rawData = parsedPoints.sort((a, b) => a.timestamp - b.timestamp);
+  // Sort date dropdown choices descending (most recent date first).
   localDates = Array.from(localDateSet).sort().reverse();
   latencyCache.clear();
 }
 
+// Filters global rawData by the currently selected date and IP protocol.
 function getFilteredData(): ParsedDataPoint[] {
   const selectedDate = ui.dateFilter.value;
   const selectedProtocol = ui.protocolFilter.value as ProtocolFilter;
 
   return rawData.filter((point) => {
     if (point.date !== selectedDate) return false;
-    if (!point.latency || selectedProtocol === 'Both') return true;
+    if (!point.latency || selectedProtocol === "IPv4 + IPv6") return true;
 
+    // Filter points to only those containing samples matching the selected protocol.
     return Object.values(point.latency).some((entries) =>
-      entries.some((entry) => entry.protocol === selectedProtocol)
+      entries.some((entry) => entry.protocol === selectedProtocol),
     );
   });
 }
 
+// Calculates the timestamp cutoff (epoch ms) for filtering latency chart data points.
+// Only applies when viewing the current day. Returns null for previous days or if "today" is selected.
+function getLatencyTimeCutoff(
+  data: readonly ParsedDataPoint[],
+  selectedDate: string,
+  timeFilter: LatencyTimeFilter,
+): number | null {
+  const today = DateTime.now().toFormat("yyyy-MM-dd");
+  if (selectedDate !== today || timeFilter === "today") {
+    return null;
+  }
+
+  const durationMs = TIME_FILTER_DURATIONS[timeFilter];
+  if (!durationMs) {
+    return null;
+  }
+
+  let referenceTime = 0;
+
+  if (data.length > 0) {
+    for (let index = data.length - 1; index >= 0; index -= 1) {
+      if (data[index]?.latency) {
+        referenceTime = data[index].timestamp;
+        break;
+      }
+    }
+  }
+
+  referenceTime = Math.max(Date.now(), referenceTime);
+  return referenceTime - durationMs;
+}
+
+// Filters data points for the latency chart by the selected time duration window within the active day.
+function filterLatencyDataByTime(
+  data: readonly ParsedDataPoint[],
+  selectedDate: string,
+  timeFilter: LatencyTimeFilter,
+): ParsedDataPoint[] {
+  const cutoff = getLatencyTimeCutoff(data, selectedDate, timeFilter);
+  if (cutoff === null) {
+    return [...data];
+  }
+
+  return data.filter((point) => point.timestamp >= cutoff);
+}
+
 // --- Latency Calculations ---
 
+// Builds a lookup map of historical ping averages per target and protocol across all data points.
 function buildLatencyHistory(
-  data: ParsedDataPoint[]
+  data: ParsedDataPoint[],
 ): Map<string, Map<Protocol, number[]>> {
   const history = new Map<string, Map<Protocol, number[]>>();
 
@@ -407,38 +537,42 @@ function buildLatencyHistory(
   return history;
 }
 
+// Evaluates whether current latency represents Normal, Elevated, or High degradation
+// relative to baseline using hybrid thresholds (both absolute ms and percentage delta).
 function getLatencyStatus(
   baselineAverage: number,
   latest: number,
-  delta: number
+  delta: number,
 ): LatencyStatus {
   if (latest === 0) {
-    return { cls: 'status-ghost', label: 'No Data' };
+    return { cls: "status-ghost", label: "No Data" };
   }
 
   const { high, elevated } = LATENCY_CONFIG.thresholds;
 
   if (delta > Math.max(high.abs, baselineAverage * high.relative)) {
-    return { cls: 'status-error', label: 'High' };
+    return { cls: "status-error", label: "High" };
   }
 
   if (delta > Math.max(elevated.abs, baselineAverage * elevated.relative)) {
-    return { cls: 'status-warning', label: 'Elevated' };
+    return { cls: "status-warning", label: "Elevated" };
   }
 
-  return { cls: 'status-success', label: 'Normal' };
+  return { cls: "status-success", label: "Normal" };
 }
 
+// Calculates arithmetic mean of a numbers array.
 function average(values: readonly number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+// Computes current metrics and health status for an individual target against its historical baseline.
 function computeLatencyStats(
   target: string,
   history: Map<string, Map<Protocol, number[]>>,
   latestPoint: ParsedDataPoint,
-  protocolFilter: ProtocolFilter
+  protocolFilter: ProtocolFilter,
 ): CalculatedLatencyStat {
   const targetHistory = history.get(target);
   const rawLatestEntries = latestPoint.latency?.[target] ?? [];
@@ -448,73 +582,74 @@ function computeLatencyStats(
       target,
       latest: 0,
       latestEntries: [],
-      cls: 'status-ghost',
-      label: 'No Data'
+      cls: "status-ghost",
+      label: "No Data",
     };
   }
 
   const latestEntries: LatencyStatEntry[] = rawLatestEntries
     .filter(
       (entry) =>
-        protocolFilter === 'Both' || entry.protocol === protocolFilter
+        protocolFilter === "IPv4 + IPv6" || entry.protocol === protocolFilter,
     )
     .map((entry) => {
-      const protocolValues = targetHistory.get(entry.protocol) ?? [entry.average];
+      const protocolValues = targetHistory.get(entry.protocol) ?? [
+        entry.average,
+      ];
       const protocolBaseline = average(protocolValues);
       const delta = entry.average - protocolBaseline;
-      const status = getLatencyStatus(
-        protocolBaseline,
-        entry.average,
-        delta
-      );
+      const status = getLatencyStatus(protocolBaseline, entry.average, delta);
 
       return {
         ...entry,
         ...status,
-        baseline: protocolBaseline
+        baseline: protocolBaseline,
       };
     });
 
   const latest = average(latestEntries.map((entry) => entry.average));
 
+  // Determine worst-case overall status for this target (Error > Warning > Success).
   let overallStatus: LatencyStatus = {
-    cls: 'status-success',
-    label: 'Normal'
+    cls: "status-success",
+    label: "Normal",
   };
 
   for (const entry of latestEntries) {
-    if (entry.cls === 'status-error') {
-      overallStatus = { cls: 'status-error', label: 'High' };
+    if (entry.cls === "status-error") {
+      overallStatus = { cls: "status-error", label: "High" };
       break;
     }
 
     if (
-      entry.cls === 'status-warning' &&
-      overallStatus.cls !== 'status-error'
+      entry.cls === "status-warning" &&
+      overallStatus.cls !== "status-error"
     ) {
-      overallStatus = { cls: 'status-warning', label: 'Elevated' };
+      overallStatus = { cls: "status-warning", label: "Elevated" };
     }
   }
 
   if (latestEntries.length === 0) {
-    overallStatus = { cls: 'status-ghost', label: 'No Data' };
+    overallStatus = { cls: "status-ghost", label: "No Data" };
   }
 
   return {
     target,
     latest,
     latestEntries,
-    ...overallStatus
+    ...overallStatus,
   };
 }
 
+// Computes latency health stats for all monitored targets in the dataset.
 function computeAllLatencyStats(
   data: ParsedDataPoint[],
-  protocolFilter: ProtocolFilter
+  protocolFilter: ProtocolFilter,
 ): CalculatedLatencyStat[] {
   const history = buildLatencyHistory(data);
   let latestPoint: ParsedDataPoint | undefined;
 
+  // Find the most recent data point that contains latency measurements.
   for (let index = data.length - 1; index >= 0; index -= 1) {
     if (data[index]?.latency) {
       latestPoint = data[index];
@@ -522,20 +657,27 @@ function computeAllLatencyStats(
     }
   }
 
-  if (!history.size || !latestPoint) return [];
+  if (!history.size || !latestPoint || !latestPoint.latency) return [];
 
-  return Array.from(history.keys())
+  // Order targets based on the latest data point to preserve the backend's configured order
+  // (e.g. Gateway, Cloudflare DNS, Youtube), falling back to historical targets if any were missed.
+  const targetOrder = new Set<string>([
+    ...Object.keys(latestPoint.latency),
+    ...history.keys(),
+  ]);
+
+  return Array.from(targetOrder)
     .map((target) =>
-      computeLatencyStats(target, history, latestPoint, protocolFilter)
+      computeLatencyStats(target, history, latestPoint, protocolFilter),
     )
-    .filter((stat) => stat.latestEntries.length > 0)
-    .sort((a, b) => a.latest - b.latest);
+    .filter((stat) => stat.latestEntries.length > 0);
 }
 
+// Retrieves cached latency stats or calculates and memoizes them.
 function getCachedLatencyStats(
   selectedDate: string,
   protocolFilter: ProtocolFilter,
-  data: ParsedDataPoint[]
+  data: ParsedDataPoint[],
 ): CalculatedLatencyStat[] {
   if (!data.length) return [];
 
@@ -552,13 +694,14 @@ function getCachedLatencyStats(
 
 // --- DOM Rendering ---
 
+// Creates a DOM element with optional CSS class, text content, and inline style overrides.
 function createElement<K extends keyof HTMLElementTagNameMap>(
   tagName: K,
   options: {
     className?: string;
     textContent?: string;
     styles?: Partial<CSSStyleDeclaration>;
-  } = {}
+  } = {},
 ): HTMLElementTagNameMap[K] {
   const element = document.createElement(tagName);
 
@@ -577,40 +720,43 @@ function createElement<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
+// Renders an instrument card for a single latency target, showing current average latency,
+// color-coded health status (Normal, Elevated, High), and packet loss badges if non-zero.
 function renderLatencyCard(
   container: HTMLElement,
-  stat: CalculatedLatencyStat
+  stat: CalculatedLatencyStat,
 ): void {
-  const card = createElement('div', { className: 'instrument-box' });
-  const header = createElement('div', { className: 'instrument-label' });
-  const target = createElement('span', { textContent: stat.target });
-  const tags = createElement('div', {
+  const card = createElement("div", { className: "instrument-box" });
+  const header = createElement("div", { className: "instrument-label" });
+  const target = createElement("span", { textContent: stat.target });
+  const tags = createElement("div", {
     styles: {
-      display: 'flex',
-      gap: '6px',
-      alignItems: 'center'
-    }
+      display: "flex",
+      gap: "6px",
+      alignItems: "center",
+    },
   });
 
+  // Display packet loss warning tags for protocols with packet drop > 0%.
   for (const entry of stat.latestEntries) {
     if (entry.packetLoss <= 0) continue;
 
-    const tagGroup = createElement('div', {
+    const tagGroup = createElement("div", {
       styles: {
-        display: 'flex',
-        alignItems: 'center'
-      }
+        display: "flex",
+        alignItems: "center",
+      },
     });
 
     tagGroup.append(
-      createElement('span', {
-        className: 'protocol-tag',
-        textContent: entry.protocol
+      createElement("span", {
+        className: "protocol-tag",
+        textContent: entry.protocol,
       }),
-      createElement('span', {
-        className: 'loss-tag',
-        textContent: `${entry.packetLoss.toFixed(1)}% LOSS`
-      })
+      createElement("span", {
+        className: "loss-tag",
+        textContent: `${entry.packetLoss.toFixed(1)}% LOSS`,
+      }),
     );
 
     tags.appendChild(tagGroup);
@@ -618,43 +764,44 @@ function renderLatencyCard(
 
   header.append(target, tags);
 
-  const values = createElement('div', {
+  // Render numerical latency values per protocol (e.g. IPv4 and IPv6 rows).
+  const values = createElement("div", {
     styles: {
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      flex: '1',
-      width: '100%'
-    }
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      flex: "1",
+      width: "100%",
+    },
   });
 
   for (const entry of stat.latestEntries) {
-    const row = createElement('div', {
+    const row = createElement("div", {
       styles: {
-        fontSize: '1.2rem',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'baseline',
-        width: '100%'
-      }
+        fontSize: "1.2rem",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "baseline",
+        width: "100%",
+      },
     });
 
-    const protocolLabel = createElement('span', {
+    const protocolLabel = createElement("span", {
       textContent: entry.protocol,
       styles: {
-        fontSize: '0.7rem'
-      }
+        fontSize: "0.9rem",
+      },
     });
 
-    const value = createElement('span', {
+    const value = createElement("span", {
       className: entry.cls,
-      textContent: entry.average.toFixed(2)
+      textContent: entry.average.toFixed(2),
     });
 
-    const unit = createElement('span', {
-      className: 'instrument-unit',
-      textContent: 'ms'
+    const unit = createElement("span", {
+      className: "instrument-unit",
+      textContent: "ms",
     });
 
     value.appendChild(unit);
@@ -662,33 +809,35 @@ function renderLatencyCard(
     values.appendChild(row);
   }
 
-  const footer = createElement('div', {
-    className: 'instrument-footer',
-    textContent: 'CURRENT LATENCY'
+  const footer = createElement("div", {
+    className: "instrument-footer",
+    textContent: "CURRENT LATENCY",
   });
 
   card.append(header, values, footer);
   container.appendChild(card);
 }
 
+// Re-renders all latency instrument cards inside the cards container.
 function updateLatencyCards(
   data: ParsedDataPoint[],
-  protocolFilter: ProtocolFilter
+  protocolFilter: ProtocolFilter,
 ): void {
   ui.latencyCards.replaceChildren();
 
-  // Preserve the existing card placement, matching the original DOM lifecycle.
+  // Preserve the existing speedtest card position in the DOM grid.
   ui.latencyCards.appendChild(ui.speedCard);
 
-  const stats = getCachedLatencyStats(ui.dateFilter.value, protocolFilter, data);
+  const stats = getCachedLatencyStats(
+    ui.dateFilter.value,
+    protocolFilter,
+    data,
+  );
 
-  if (
-    !stats.length &&
-    ui.speedCard.classList.contains('hidden')
-  ) {
-    const message = createElement('div', {
-      textContent: 'No latency data.',
-      styles: { gridColumn: '1 / -1' }
+  if (!stats.length && ui.speedCard.classList.contains("hidden")) {
+    const message = createElement("div", {
+      textContent: "No latency data.",
+      styles: { gridColumn: "1 / -1" },
     });
     ui.latencyCards.appendChild(message);
   }
@@ -698,8 +847,9 @@ function updateLatencyCards(
   }
 }
 
+// Finds the most recent data point containing speedtest results.
 function findLatestSpeedtest(
-  data: ParsedDataPoint[]
+  data: ParsedDataPoint[],
 ): ParsedDataPoint | undefined {
   for (let index = data.length - 1; index >= 0; index -= 1) {
     if (data[index]?.speedtest) return data[index];
@@ -707,17 +857,18 @@ function findLatestSpeedtest(
   return undefined;
 }
 
+// Updates the download/upload speed overview card or hides it if speedtest data is absent.
 function updateSpeedCard(data: ParsedDataPoint[]): void {
   const latest = findLatestSpeedtest(data);
 
   if (!latest?.speedtest) {
-    ui.speedCard.classList.add('hidden');
-    ui.speedSection.classList.add('hidden');
+    ui.speedCard.classList.add("hidden");
+    ui.speedSection.classList.add("hidden");
     return;
   }
 
-  ui.speedCard.classList.remove('hidden');
-  ui.speedSection.classList.remove('hidden');
+  ui.speedCard.classList.remove("hidden");
+  ui.speedSection.classList.remove("hidden");
 
   ui.latestDownload.textContent = latest.speedtest.download.toFixed(0);
   ui.latestUpload.textContent = latest.speedtest.upload.toFixed(0);
@@ -726,6 +877,7 @@ function updateSpeedCard(data: ParsedDataPoint[]): void {
 
 // --- Charts ---
 
+// Cleans up existing Chart.js instances to prevent memory leaks and duplicate canvas bindings.
 function destroyCharts(): void {
   charts.latency?.destroy();
   charts.speedtest?.destroy();
@@ -733,9 +885,13 @@ function destroyCharts(): void {
   charts.speedtest = null;
 }
 
+// Constructs aligned data series for each target and protocol.
+// Ensures every series array matches the exact length and timestamps of the X-axis labels,
+// using null to fill timestamps where a target had no measurement.
 function buildLatencySeries(
   data: ParsedDataPoint[],
-  protocolFilter: ProtocolFilter
+  protocolFilter: ProtocolFilter,
+  targetFilter: string,
 ): Map<string, LatencySeries> {
   const series = new Map<string, LatencySeries>();
   const latencyData = data.filter((point) => point.latency);
@@ -744,16 +900,20 @@ function buildLatencySeries(
     if (!point.latency) return;
 
     for (const [target, entries] of Object.entries(point.latency)) {
+      if (targetFilter !== ALL_LATENCY_TARGETS && target !== targetFilter) {
+        continue;
+      }
+
       for (const entry of entries) {
         if (
-          protocolFilter !== 'Both' &&
+          protocolFilter !== "IPv4 + IPv6" &&
           entry.protocol !== protocolFilter
         ) {
           continue;
         }
 
         const key =
-          protocolFilter === 'Both'
+          protocolFilter === "IPv4 + IPv6"
             ? `${target} (${entry.protocol})`
             : target;
 
@@ -761,13 +921,14 @@ function buildLatencySeries(
         if (!targetSeries) {
           targetSeries = {
             latency: new Array<number | null>(latencyData.length).fill(null),
-            loss: new Array<number | null>(latencyData.length).fill(null)
+            loss: new Array<number | null>(latencyData.length).fill(null),
           };
           series.set(key, targetSeries);
         }
 
         targetSeries.latency[index] = entry.average;
-        targetSeries.loss[index] = entry.packetLoss > 0 ? entry.packetLoss : null;
+        targetSeries.loss[index] =
+          entry.packetLoss > 0 ? entry.packetLoss : null;
       }
     }
   });
@@ -775,42 +936,53 @@ function buildLatencySeries(
   return series;
 }
 
-function toSortedLatencySeries(
-  series: Map<string, LatencySeries>
+// Converts series map into an array sorted by overall average latency.
+function toLatencySeriesEntries(
+  series: Map<string, LatencySeries>,
 ): LatencySeriesEntry[] {
-  return Array.from(series.entries())
-    .map(([key, data]) => {
-      const validPoints = data.latency.filter(
-        (value): value is number => value !== null
-      );
+  return Array.from(series.entries()).map(([key, data]) => {
+    const validPoints = data.latency.filter(
+      (value): value is number => value !== null,
+    );
 
-      return {
-        key,
-        ...data,
-        avgLatency: average(validPoints) || Infinity
-      };
-    })
-    .sort((a, b) => a.avgLatency - b.avgLatency);
+    return {
+      key,
+      ...data,
+      avgLatency: average(validPoints) || Infinity,
+    };
+  });
 }
 
+// Renders the multi-series line chart with dual Y-axes (Latency in ms on left, Packet Loss % on right).
 function renderLatencyChart(
   data: ParsedDataPoint[],
   protocolFilter: ProtocolFilter,
+  targetFilter: string,
+  timeFilter: LatencyTimeFilter,
   text: string,
   grid: string,
-  palette: string[]
+  palette: string[],
 ): void {
-  const latencyCtx = getElement<HTMLCanvasElement>('latencyChart');
-  const latencyData = data.filter((point) => point.latency);
-  const labels = latencyData.map((point) => point.formattedTime);
-  const targetEntries = toSortedLatencySeries(
-    buildLatencySeries(data, protocolFilter)
+  charts.latency?.destroy();
+  charts.latency = null;
+
+  const latencyCtx = getElement<HTMLCanvasElement>("latencyChart");
+  const filteredData = filterLatencyDataByTime(
+    data,
+    ui.dateFilter.value,
+    timeFilter,
   );
-  const latencyDatasets: ChartDataset<'line'>[] = [];
+  const latencyData = filteredData.filter((point) => point.latency);
+  const labels = latencyData.map((point) => point.formattedTime);
+  const targetEntries = toLatencySeriesEntries(
+    buildLatencySeries(filteredData, protocolFilter, targetFilter),
+  );
+  const latencyDatasets: ChartDataset<"line">[] = [];
 
   targetEntries.forEach(({ key, latency, loss }, index) => {
     const color = palette[index % palette.length];
 
+    // Solid line dataset for round-trip latency.
     latencyDatasets.push({
       label: key,
       data: latency,
@@ -820,166 +992,168 @@ function renderLatencyChart(
       pointRadius: 2,
       tension: 0.3,
       spanGaps: true,
-      yAxisID: 'y'
+      yAxisID: "y",
     });
 
+    // Dashed line dataset for packet loss % on secondary Y-axis (only added if packet loss occurred).
     const hasLoss = loss.some((value) => value !== null && value > 0);
     if (hasLoss) {
       latencyDatasets.push({
         label: `${key} Loss (%)`,
         data: loss,
         borderColor: color,
-        backgroundColor: 'transparent',
+        backgroundColor: "transparent",
         borderDash: [5, 5],
         borderWidth: 2,
         pointRadius: 3,
         tension: 0.3,
         spanGaps: true,
-        yAxisID: 'y1'
+        yAxisID: "y1",
       });
     }
   });
 
   charts.latency = new Chart(latencyCtx, {
-    type: 'line',
+    type: "line",
     data: { labels, datasets: latencyDatasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: {
-          position: 'top',
-          align: 'start',
+          position: "top",
+          align: "start",
           labels: {
             boxWidth: 10,
-            font: { size: 10 }
-          }
-        }
+            font: { size: 10 },
+          },
+        },
       },
       scales: {
         x: {
           grid: { color: grid },
-          ticks: { font: { size: 9 } }
+          ticks: { font: { size: 9 } },
         },
         y: {
-          type: 'linear',
+          type: "linear",
           display: true,
-          position: 'left',
+          position: "left",
           title: {
             display: true,
-            text: 'Latency (ms)',
-            font: { size: 10 }
+            text: "Latency (ms)",
+            font: { size: 10 },
           },
           grid: { color: grid },
-          ticks: { font: { size: 10 } }
+          ticks: { font: { size: 10 } },
         },
         y1: {
-          type: 'linear',
+          type: "linear",
           display: true,
-          position: 'right',
+          position: "right",
           min: 0,
           max: 100,
           title: {
             display: true,
-            text: 'Packet Loss (%)',
-            font: { size: 10 }
+            text: "Packet Loss (%)",
+            font: { size: 10 },
           },
           grid: { drawOnChartArea: false },
-          ticks: { font: { size: 10 } }
-        }
+          ticks: { font: { size: 10 } },
+        },
       },
       interaction: {
-        mode: 'index',
-        intersect: false
-      }
-    }
+        mode: "index",
+        intersect: false,
+      },
+    },
   });
 
   Chart.defaults.color = text;
 }
 
-function renderSpeedtestChart(
-  data: ParsedDataPoint[],
-  grid: string
-): void {
+// Renders the speedtest bar chart comparing download and upload throughput.
+function renderSpeedtestChart(data: ParsedDataPoint[], grid: string): void {
   const speed = data.filter(
     (point): point is ParsedDataPoint & { speedtest: SpeedtestEntry } =>
-      point.speedtest !== undefined
+      point.speedtest !== undefined,
   );
 
   if (speed.length === 0) {
-    ui.speedSection.classList.add('hidden');
+    ui.speedSection.classList.add("hidden");
     return;
   }
 
-  ui.speedSection.classList.remove('hidden');
+  ui.speedSection.classList.remove("hidden");
 
-  const speedCtx = getElement<HTMLCanvasElement>('speedtestChart');
-  const downloadColor = getCSSVar('--neon-blue', '#00d2ff');
-  const uploadColor = getCSSVar('--neon-orange', '#ff9900');
+  const speedCtx = getElement<HTMLCanvasElement>("speedtestChart");
+  const downloadColor = getCSSVar("--neon-blue", "#00d2ff");
+  const uploadColor = getCSSVar("--neon-orange", "#ff9900");
 
   charts.speedtest = new Chart(speedCtx, {
-    type: 'bar',
+    type: "bar",
     data: {
       labels: speed.map((point) => point.formattedTime),
       datasets: [
         {
-          label: 'Download',
+          label: "Download",
           data: speed.map((point) => point.speedtest.download),
           backgroundColor: downloadColor,
           borderColor: downloadColor,
           borderWidth: 1,
           borderRadius: 4,
           categoryPercentage: 0.9,
-          barPercentage: 0.95
+          barPercentage: 0.95,
         },
         {
-          label: 'Upload',
+          label: "Upload",
           data: speed.map((point) => point.speedtest.upload),
           backgroundColor: uploadColor,
           borderColor: uploadColor,
           borderWidth: 1,
           borderRadius: 4,
           categoryPercentage: 0.9,
-          barPercentage: 0.95
-        }
-      ]
+          barPercentage: 0.95,
+        },
+      ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: {
-          position: 'top',
-          align: 'start'
-        }
+          position: "top",
+          align: "start",
+        },
       },
       scales: {
         x: {
           grid: { color: grid },
-          ticks: { font: { size: 9 } }
+          ticks: { font: { size: 9 } },
         },
         y: {
           title: {
             display: true,
-            text: 'Speed (Mbps)',
-            font: { size: 10 }
+            text: "Speed (Mbps)",
+            font: { size: 10 },
           },
           grid: { color: grid },
-          ticks: { font: { size: 10 } }
-        }
+          ticks: { font: { size: 10 } },
+        },
       },
       interaction: {
-        mode: 'index',
-        intersect: false
-      }
-    }
+        mode: "index",
+        intersect: false,
+      },
+    },
   });
 }
 
+// Configures global Chart.js styling defaults and renders both charts.
 function renderCharts(
   data: ParsedDataPoint[],
-  protocolFilter: ProtocolFilter
+  protocolFilter: ProtocolFilter,
+  targetFilter: string,
+  timeFilter: LatencyTimeFilter,
 ): void {
   destroyCharts();
 
@@ -988,19 +1162,51 @@ function renderCharts(
 
   Chart.defaults.color = text;
   Chart.defaults.borderColor = grid;
-  Chart.defaults.font.family = 'Inter';
+  Chart.defaults.font.family = "Inter";
 
-  renderLatencyChart(data, protocolFilter, text, grid, palette);
+  renderLatencyChart(
+    data,
+    protocolFilter,
+    targetFilter,
+    timeFilter,
+    text,
+    grid,
+    palette,
+  );
   renderSpeedtestChart(data, grid);
+}
+
+// Re-renders only the historical latency chart using current target and time filters.
+function updateLatencyChart(): void {
+  const data = getFilteredData();
+  if (!data.length) return;
+
+  const protocolFilter = ui.protocolFilter.value as ProtocolFilter;
+  const targetFilter = ui.latencyTargetFilter.value;
+  const timeFilter = getLatencyTimeFilter();
+
+  const { text, grid } = getThemeColors();
+  const palette = getChartPalette();
+
+  renderLatencyChart(
+    data,
+    protocolFilter,
+    targetFilter,
+    timeFilter,
+    text,
+    grid,
+    palette,
+  );
 }
 
 // --- App Lifecycle ---
 
+// Populates the date selector dropdown with available chronological dates.
 function populateFilters(): void {
   const fragment = document.createDocumentFragment();
 
   for (const date of localDates) {
-    const option = document.createElement('option');
+    const option = document.createElement("option");
     option.value = date;
     option.textContent = date;
     fragment.appendChild(option);
@@ -1013,6 +1219,45 @@ function populateFilters(): void {
   }
 }
 
+// Populates the latency target selector from the available addresses/targets.
+// The "All" option is always first and is the default when no previous selection exists.
+function populateLatencyTargetFilter(data: ParsedDataPoint[]): void {
+  const targets = new Set<string>();
+
+  for (const point of data) {
+    if (!point.latency) continue;
+
+    for (const target of Object.keys(point.latency)) {
+      targets.add(target);
+    }
+  }
+
+  const previousSelection = ui.latencyTargetFilter.value;
+  const fragment = document.createDocumentFragment();
+
+  const allOption = document.createElement("option");
+  allOption.value = ALL_LATENCY_TARGETS;
+  allOption.textContent = "All";
+  fragment.appendChild(allOption);
+
+  for (const target of Array.from(targets).sort((a, b) => a.localeCompare(b))) {
+    const option = document.createElement("option");
+    option.value = target;
+    option.textContent = target;
+    fragment.appendChild(option);
+  }
+
+  ui.latencyTargetFilter.replaceChildren(fragment);
+
+  const hasPreviousSelection =
+    previousSelection === ALL_LATENCY_TARGETS || targets.has(previousSelection);
+
+  ui.latencyTargetFilter.value = hasPreviousSelection
+    ? previousSelection
+    : ALL_LATENCY_TARGETS;
+}
+
+// Applies active date and protocol filters, updating telemetry cards, overview widgets, and charts.
 function applyFilters(): void {
   const data = getFilteredData();
 
@@ -1020,34 +1265,49 @@ function applyFilters(): void {
     updateSpeedCard([]);
     ui.latencyCards.replaceChildren();
     destroyCharts();
-    setView('empty');
+    setView("empty");
     return;
   }
 
   const protocolFilter = ui.protocolFilter.value as ProtocolFilter;
+  const today = DateTime.now().toFormat("yyyy-MM-dd");
+  const isCurrentDay = ui.dateFilter.value === today;
 
-  setView('content');
+  ui.latencyTimeControlGroup.classList.toggle("hidden", !isCurrentDay);
+  if (!isCurrentDay) {
+    ui.latencyTimeFilter.value = DEFAULT_TIME_FILTER;
+  }
+
+  populateLatencyTargetFilter(data);
+  const targetFilter = ui.latencyTargetFilter.value;
+  const timeFilter = getLatencyTimeFilter();
+
+  setView("content");
   updateSpeedCard(data);
   updateLatencyCards(data, protocolFilter);
-  renderCharts(data, protocolFilter);
+  renderCharts(data, protocolFilter, targetFilter, timeFilter);
 }
 
+// Attaches event listeners to filter dropdowns.
 function initFilters(): void {
-  ui.dateFilter.addEventListener('change', applyFilters);
-  ui.protocolFilter.addEventListener('change', applyFilters);
+  ui.dateFilter.addEventListener("change", applyFilters);
+  ui.protocolFilter.addEventListener("change", applyFilters);
+  ui.latencyTargetFilter.addEventListener("change", updateLatencyChart);
+  ui.latencyTimeFilter.addEventListener("change", updateLatencyChart);
 }
 
+// Fetches the live metrics.json dataset from the server and initialises the dashboard.
 async function load(): Promise<void> {
-  setView('loading');
+  setView("loading");
 
   try {
     const response = await fetch(METRICS_URL, {
-      method: 'GET',
-      credentials: 'same-origin',
-      cache: 'no-cache',
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-cache",
       headers: {
-        Accept: 'application/json'
-      }
+        Accept: "application/json",
+      },
     });
 
     if (!response.ok) {
@@ -1061,99 +1321,87 @@ async function load(): Promise<void> {
     populateFilters();
     applyFilters();
   } catch (error: unknown) {
-    console.error('Failed to load metrics.', error);
+    console.error("Failed to load metrics.", error);
     destroyCharts();
-    setView('error');
+    setView("error");
   }
 }
 
 // --- Theme Management ---
 
-function getSystemTheme(): ResolvedTheme {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches
-    ? 'dark'
-    : 'light';
-}
-
+// Reads the saved light/dark theme preference, defaulting to dark.
 function getStoredTheme(): Theme {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    return isTheme(stored) ? stored : 'system';
+    return stored === "light" || stored === "dark" ? stored : DEFAULT_THEME;
   } catch {
     // Storage may be unavailable due to privacy settings or browser policy.
-    return 'system';
+    return DEFAULT_THEME;
   }
 }
 
-function getEffectiveTheme(): ResolvedTheme {
-  const stored = getStoredTheme();
-  return stored === 'system' ? getSystemTheme() : stored;
-}
+// Updates theme toggle icon and accessibility attributes.
+function updateThemeToggleUI(theme: Theme): void {
+  const isLight = theme === "light";
+  const labelText = isLight ? "Switch to dark theme" : "Switch to light theme";
 
-function updateThemeToggleUI(effectiveTheme: ResolvedTheme): void {
-  const isLight = effectiveTheme === 'light';
-  const labelText = isLight
-    ? 'Switch to dark theme'
-    : 'Switch to light theme';
-
-  ui.themeToggle.setAttribute('aria-label', labelText);
-  ui.themeToggle.setAttribute('title', labelText);
+  ui.themeToggle.setAttribute("aria-label", labelText);
+  ui.themeToggle.setAttribute("title", labelText);
 
   ui.themeToggle
-    .querySelector<HTMLElement>('.sun-icon')
-    ?.classList.toggle('hidden', !isLight);
+    .querySelector<HTMLElement>(".sun-icon")
+    ?.classList.toggle("hidden", !isLight);
   ui.themeToggle
-    .querySelector<HTMLElement>('.moon-icon')
-    ?.classList.toggle('hidden', isLight);
+    .querySelector<HTMLElement>(".moon-icon")
+    ?.classList.toggle("hidden", isLight);
 }
 
+// Persists the explicit light/dark theme preference to localStorage.
 function setStoredTheme(theme: Theme): void {
   try {
-    if (theme === 'system') {
-      localStorage.removeItem(THEME_STORAGE_KEY);
-    } else {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
-    }
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
     // Theme rendering still works when persistent storage is unavailable.
   }
 }
 
+// Applies the selected theme to the DOM and re-renders charts with theme-matching colors.
 function applyTheme(theme: Theme): void {
-  styleCache = null;
+  styleCache = null; // Invalidate cached CSS variables.
   setStoredTheme(theme);
 
-  const effectiveTheme = theme === 'system' ? getSystemTheme() : theme;
-  document.documentElement.setAttribute('data-theme', effectiveTheme);
-  updateThemeToggleUI(effectiveTheme);
+  document.documentElement.setAttribute("data-theme", theme);
+  updateThemeToggleUI(theme);
 
   if (rawData.length > 0) {
     const data = getFilteredData();
     if (data.length > 0) {
-      renderCharts(data, ui.protocolFilter.value as ProtocolFilter);
+      renderCharts(
+        data,
+        ui.protocolFilter.value as ProtocolFilter,
+        ui.latencyTargetFilter.value,
+        getLatencyTimeFilter(),
+      );
     }
   }
 }
 
+// Toggles between the explicit light and dark themes.
 function toggleTheme(): void {
-  const current = getEffectiveTheme();
-  const next: Theme = current === 'dark' ? 'light' : 'dark';
+  const current = getStoredTheme();
+  const next: Theme = current === "dark" ? "light" : "dark";
   applyTheme(next);
 }
 
+// Initializes theme state using the saved preference, with dark as the default.
+// No operating-system color-scheme detection is performed.
 function initTheme(): void {
-  const effectiveTheme = getEffectiveTheme();
-  document.documentElement.setAttribute('data-theme', effectiveTheme);
-  updateThemeToggleUI(effectiveTheme);
+  const theme = getStoredTheme();
 
-  const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-  mediaQuery.addEventListener('change', () => {
-    if (getStoredTheme() === 'system') {
-      applyTheme('system');
-    }
-  });
+  document.documentElement.setAttribute("data-theme", theme);
+  updateThemeToggleUI(theme);
 
-  ui.themeToggle.addEventListener('click', toggleTheme);
+  ui.themeToggle.addEventListener("click", toggleTheme);
 }
 
 // --- Bootstrap ---
