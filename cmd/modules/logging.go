@@ -10,47 +10,57 @@ import (
 	"sync"
 )
 
-// Logger wraps three slog.Logger instances for info, warning, and error levels.
-// All writes are serialised through a Mutex.
+// Logger wraps three distinct slog.Logger instances routing structured JSON output to
+// dedicated log files for info, warning, and error levels.
+// All write operations are serialized through a mutex to prevent race conditions or interleaved log writes.
 type Logger struct {
 	mu      sync.Mutex
 	info    *slog.Logger
 	warning *slog.Logger
 	errLog  *slog.Logger
 
-	// keep file handles so we can close them later
-	infoFile    *os.File
-	warningFile *os.File
-	errorFile   *os.File
+	// Keep underlying OS file handles to flush and close descriptors cleanly on shutdown.
+	files []*os.File
 }
 
-// NewLogger creates (or opens) the three log files under logDir and returns a
-// ready-to-use Logger. logDir is created if it does not already exist.
+// NewLogger creates the log directory if missing and opens info.log, warning.log,
+// and error.log in append mode. It configures structured JSON handlers for each file stream.
 func NewLogger(logDir string) (*Logger, error) {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 
+	var files []*os.File
+	cleanup := func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}
+
 	open := func(name string) (*os.File, error) {
-		return os.OpenFile(filepath.Join(logDir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(filepath.Join(logDir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", name, err)
+		}
+		files = append(files, f)
+		return f, nil
 	}
 
 	infoFile, err := open("info.log")
 	if err != nil {
-		return nil, fmt.Errorf("open info.log: %w", err)
+		return nil, err
 	}
 
 	warnFile, err := open("warning.log")
 	if err != nil {
-		infoFile.Close()
-		return nil, fmt.Errorf("open warning.log: %w", err)
+		cleanup()
+		return nil, err
 	}
 
 	errFile, err := open("error.log")
 	if err != nil {
-		infoFile.Close()
-		warnFile.Close()
-		return nil, fmt.Errorf("open error.log: %w", err)
+		cleanup()
+		return nil, err
 	}
 
 	newHandler := func(w io.Writer, level slog.Level) *slog.Logger {
@@ -58,53 +68,41 @@ func NewLogger(logDir string) (*Logger, error) {
 	}
 
 	return &Logger{
-		info:        newHandler(infoFile, slog.LevelInfo),
-		warning:     newHandler(warnFile, slog.LevelWarn),
-		errLog:      newHandler(errFile, slog.LevelError),
-		infoFile:    infoFile,
-		warningFile: warnFile,
-		errorFile:   errFile,
+		info:    newHandler(infoFile, slog.LevelInfo),
+		warning: newHandler(warnFile, slog.LevelWarn),
+		errLog:  newHandler(errFile, slog.LevelError),
+		files:   files,
 	}, nil
 }
 
-// Close flushes and closes all log files.
+// Close flushes and closes all underlying log file descriptors, combining any closing errors.
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var errs []error
-	if l.infoFile != nil {
-		if err := l.infoFile.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if l.warningFile != nil {
-		if err := l.warningFile.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if l.errorFile != nil {
-		if err := l.errorFile.Close(); err != nil {
+	for _, f := range l.files {
+		if err := f.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// Info logs an informational message.
+// Info logs a structured informational message to info.log.
 func (l *Logger) Info(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.info.Info(msg, args...)
 }
 
-// Warn logs a warning message.
+// Warn logs a structured warning message to warning.log.
 func (l *Logger) Warn(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.warning.Warn(msg, args...)
 }
 
-// Error logs an error message.
+// Error logs a structured error message to error.log.
 func (l *Logger) Error(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

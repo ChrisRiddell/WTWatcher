@@ -1,12 +1,13 @@
 ---
 Schedule:
-    Ping: 50 Minutes # Minutes or Hours
+    Ping: 10 Minutes # Minutes or Hours
     Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
     Archiving: 14 Days # Minutes, Hours or Days
+    PingAnomalyThresholdMs: 2000 # Max realistic ping (ms). Spikes above this are filtered as anomalies.
 
 Addresses:
     Gateway:
-        IPv4: 192.168.1.1
+        IPv4: 192.168.2.1
     Cloudflare DNS:
         IPv6: 2606:4700:4700::1111
         IPv4: 1.1.1.1

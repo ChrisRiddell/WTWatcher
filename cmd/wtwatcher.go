@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -13,21 +14,24 @@ import (
 	"github.com/chrisriddell/wtwatcher/public"
 )
 
-// Run is the entry point called from main.go.
+// Run is the main application coordinator. It parses CLI arguments, bootstraps
+// required filesystem structures, initializes logging, reads configuration, sets up
+// data storage and task scheduling, and manages graceful shutdown on OS termination signals.
 func Run() {
-	// CLI flags
+	// Parse CLI flags for optional server mode, HTTP port, and custom config file path.
 	serverFlag := flag.Bool("server", false, "Start the HTTP server to serve public/ files")
 	portFlag := flag.Int("port", 8080, "Port for the HTTP server (default: 8080)")
 	configFlag := flag.String("config", "config.yml", "Path to the configuration file")
 	flag.Parse()
 
-	// Bootstrap required files and folders
+	// Bootstrap required directories (log, public, archive) and extract default
+	// configuration and embedded frontend files if they do not yet exist on disk.
 	if err := bootstrap(*configFlag); err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrap error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Initialise logger
+	// Initialize multi-file structured logger (info.log, warning.log, error.log).
 	logger, err := modules.NewLogger("./log")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialise logger: %v\n", err)
@@ -35,7 +39,7 @@ func Run() {
 	}
 	defer logger.Close()
 
-	// Load & validate config
+	// Load and validate user configuration from the specified YAML file.
 	cfg, err := modules.LoadConfig(*configFlag)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
@@ -44,19 +48,20 @@ func Run() {
 	}
 	logger.Info("configuration loaded successfully", "config", *configFlag)
 
-	// Initialise file manager (metrics.json in ./public/)
-	fm, err := modules.NewFileManager("./public/metrics.json", "./archive")
+	// Initialize thread-safe file manager for reading and writing metrics.json and archiving.
+	fm, err := modules.NewFileManager("./public/metrics.json", "./archive", logger)
 	if err != nil {
 		logger.Error("failed to initialise file manager", "error", err)
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Initialise and start scheduler
+	// Initialize and launch the periodic task scheduler (pings, speedtests, archiving).
 	scheduler := modules.NewScheduler(cfg, fm, logger)
 	scheduler.Start()
 	logger.Info("scheduler started")
 
-	// Optionally start HTTP server
+	// If the -server flag was provided, run the embedded HTTP server in a background goroutine.
 	var srv *modules.Server
 	if *serverFlag {
 		srv = modules.NewServer(*portFlag, "./public", logger)
@@ -67,16 +72,18 @@ func Run() {
 		}()
 	}
 
-	// Block until SIGINT / SIGTERM
+	// Block main goroutine until an interrupt (Ctrl+C) or termination signal is received from the OS.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
+	// Begin graceful shutdown sequence to ensure in-flight tasks and file writes finish cleanly.
 	fmt.Println("\nShutting down…")
 	logger.Info("shutdown signal received")
 	scheduler.Stop()
 	logger.Info("scheduler stopped cleanly")
 
+	// Gracefully shut down HTTP server with a 5-second deadline if running.
 	if srv != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -88,23 +95,25 @@ func Run() {
 	}
 }
 
-// bootstrap ensures that required directories and the configuration file exist.
+// bootstrap ensures that required directories (log, public, archive) exist and
+// extracts the default configuration and embedded frontend UI assets if they are missing.
 func bootstrap(configPath string) error {
+	// Create required directories with read/write/execute permissions.
 	dirs := []string{"./log", "./public", "./archive"}
 	for _, dir := range dirs {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", dir, err)
-			}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
 
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+	// Generate a sensible default configuration file if one does not exist.
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		defaultConfig := `---
 Schedule:
     Ping: 5 Minutes # Minutes or Hours
     Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
     Archiving: 14 Days # Minutes, Hours or Days
+    PingAnomalyThresholdMs: 2000 # Max realistic ping (ms). Spikes above this are filtered as anomalies.
 
 Addresses:
     Gateway:
@@ -121,14 +130,15 @@ Addresses:
 		}
 	}
 
-	// Create frontend files if they are missing
+	// Write embedded frontend assets to the public/ folder if they don't already exist.
+	// This enables the static HTTP server to serve the UI immediately out-of-the-box.
 	frontendFiles := map[string][]byte{
 		"./public/index.html": public.IndexHTML,
 		"./public/styles.css": public.StylesCSS,
 		"./public/scripts.js": public.ScriptsJS,
 	}
 	for path, content := range frontendFiles {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			if err := os.WriteFile(path, content, 0644); err != nil {
 				return fmt.Errorf("failed to create %s: %w", path, err)
 			}

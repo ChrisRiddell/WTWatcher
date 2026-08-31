@@ -121,3 +121,69 @@ func TestNewServer_ConstructorAndShutdown(t *testing.T) {
 		t.Errorf("Shutdown unstarted: want nil, got %v", err)
 	}
 }
+
+func TestServer_SecurityHeaders(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewLogger(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	if err := os.WriteFile(dir+"/index.html", []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(8080, dir, logger)
+	handler := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	checks := map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "SAMEORIGIN",
+		"Content-Security-Policy": "default-src 'self'; " +
+			"script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+			"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+			"font-src 'self' https://fonts.gstatic.com; " +
+			"connect-src 'self' https://cdn.jsdelivr.net",
+	}
+	for header, want := range checks {
+		if got := resp.Header.Get(header); got != want {
+			t.Errorf("%s: want %q, got %q", header, want, got)
+		}
+	}
+}
+
+func TestServer_DirectoryListingForbidden(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewLogger(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Create a subdirectory — requesting it should return 403, not a listing.
+	if err := os.Mkdir(dir+"/subdir", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := NewServer(8080, dir, logger)
+	handler := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/subdir", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("directory listing: want 403, got %d", resp.StatusCode)
+	}
+}

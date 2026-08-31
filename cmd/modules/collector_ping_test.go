@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestResolveTargets_IPOnly(t *testing.T) {
@@ -95,4 +96,89 @@ func TestIsPermissionError(t *testing.T) {
 	if isPermissionError(nil) {
 		t.Error("expected nil to be false")
 	}
+}
+
+func TestFilterAnomalyRTTs(t *testing.T) {
+	ms := func(n int64) time.Duration { return time.Duration(n) * time.Millisecond }
+	threshold := int64(2000) // 2 000 ms default
+
+	t.Run("all normal — no filter", func(t *testing.T) {
+		rtts := []time.Duration{ms(10), ms(12), ms(11), ms(13)}
+		got := filterAnomalyRTTs(rtts, threshold)
+		if got != nil {
+			t.Errorf("expected nil (no outliers), got %v", got)
+		}
+	})
+
+	t.Run("single extreme spike is removed", func(t *testing.T) {
+		// Three normal pings + one absurd spike typical of OS jitter.
+		rtts := []time.Duration{ms(12), ms(11), ms(13), ms(25000)}
+		got := filterAnomalyRTTs(rtts, threshold)
+		if got == nil {
+			t.Fatal("expected filtered slice, got nil")
+		}
+		for _, rtt := range got {
+			if rtt >= ms(25000) {
+				t.Errorf("spike %v should have been removed", rtt)
+			}
+		}
+		if len(got) < 2 {
+			t.Errorf("expected at least 2 clean RTTs, got %d", len(got))
+		}
+	})
+
+	t.Run("all samples are spikes — returns nil (too few clean)", func(t *testing.T) {
+		// With all packets spiked, filtering leaves < 2 samples.
+		rtts := []time.Duration{ms(30000), ms(40000)}
+		got := filterAnomalyRTTs(rtts, threshold)
+		if got != nil {
+			t.Errorf("expected nil when all are outliers, got %v", got)
+		}
+	})
+
+	t.Run("single element — returns nil", func(t *testing.T) {
+		got := filterAnomalyRTTs([]time.Duration{ms(10)}, threshold)
+		if got != nil {
+			t.Errorf("expected nil for single-element input, got %v", got)
+		}
+	})
+
+	t.Run("empty — returns nil", func(t *testing.T) {
+		got := filterAnomalyRTTs(nil, threshold)
+		if got != nil {
+			t.Errorf("expected nil for empty input, got %v", got)
+		}
+	})
+
+	t.Run("two normal pings — no filter (too few to have outliers)", func(t *testing.T) {
+		rtts := []time.Duration{ms(10), ms(12)}
+		got := filterAnomalyRTTs(rtts, threshold)
+		if got != nil {
+			t.Errorf("expected nil for two identical-ish pings, got %v", got)
+		}
+	})
+
+	t.Run("realistic 4-packet run with one spike", func(t *testing.T) {
+		// Typical scenario: 3 good pings + 1 huge OS jitter spike.
+		rtts := []time.Duration{ms(8), ms(9), ms(10), ms(35000)}
+		got := filterAnomalyRTTs(rtts, threshold)
+		if got == nil {
+			t.Fatal("expected filtered slice for 4-packet run with spike")
+		}
+		if len(got) != 3 {
+			t.Errorf("expected 3 clean RTTs, got %d: %v", len(got), got)
+		}
+	})
+
+	t.Run("4-packet run with spike just above threshold", func(t *testing.T) {
+		// Three ~30ms pings + one 2500ms spike above the 2000ms threshold.
+		rtts := []time.Duration{ms(30), ms(31), ms(29), ms(2500)}
+		got := filterAnomalyRTTs(rtts, threshold)
+		if got == nil {
+			t.Fatal("expected filtered slice for 2500ms spike")
+		}
+		if len(got) != 3 {
+			t.Errorf("expected 3 clean RTTs, got %d: %v", len(got), got)
+		}
+	})
 }

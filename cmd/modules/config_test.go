@@ -10,6 +10,7 @@ Schedule:
     Ping: 15 Minutes
     Speedtest: 3 Hours
     Archiving: 14 Days
+    PingAnomalyThresholdMs: 2000
 
 Addresses:
     Gateway:
@@ -44,6 +45,7 @@ Schedule:
     Ping: 15 Minutes
     Speedtest: 3 Hours
     Archiving: 14 Days
+    PingAnomalyThresholdMs: 2000
 Addresses:
     Bad:
         IPv4: not-an-ip
@@ -60,6 +62,7 @@ Schedule:
     Ping: 15 Minutes
     Speedtest: 3 Hours
     Archiving: 14 Days
+    PingAnomalyThresholdMs: 2000
 Addresses:
     Site:
         Domain: example.com
@@ -77,6 +80,7 @@ Schedule:
     Ping: 15 Weeks
     Speedtest: 3 Hours
     Archiving: 14 Days
+    PingAnomalyThresholdMs: 2000
 Addresses: {}
 `
 	_, err := ParseConfig([]byte(yaml))
@@ -91,6 +95,7 @@ Schedule:
     Ping: 1 Minutes
     Speedtest: 1 Hours
     Archiving: 1 Days
+    PingAnomalyThresholdMs: 2000
 Addresses:
     Bad:
         Domain: not a domain
@@ -107,6 +112,7 @@ Schedule:
     Ping: 5 Minutes
     Speedtest: 1 Hours
     Archiving: 7 Days
+    PingAnomalyThresholdMs: 2000
 Addresses:
     CloudflareDNS:
         IPv6: 2606:4700:4700::1111
@@ -133,6 +139,7 @@ Schedule:
     Ping: 5 Minutes
     Speedtest: 1 Hours
     Archiving: 7 Days
+    PingAnomalyThresholdMs: 2000
 Addresses:
     Empty: {}
 `
@@ -148,6 +155,7 @@ Schedule:
     Ping: 1 Minutes
     Speedtest: OFF
     Archiving: 14 Days
+    PingAnomalyThresholdMs: 2000
 Addresses:
     Local:
         IPv4: 127.0.0.1
@@ -158,5 +166,78 @@ Addresses:
 	}
 	if cfg.Schedule.SpeedtestSeconds != 0 {
 		t.Errorf("speedtest: want 0, got %d", cfg.Schedule.SpeedtestSeconds)
+	}
+}
+
+func TestParseConfig_AnomalyThreshold_Missing(t *testing.T) {
+	// PingAnomalyThresholdMs is now required — omitting it must return an error.
+	yaml := `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 7 Days
+Addresses:
+    Local:
+        IPv4: 127.0.0.1
+`
+	_, err := ParseConfig([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error when PingAnomalyThresholdMs is missing, got nil")
+	}
+}
+
+func TestParseConfig_AnomalyThreshold_Explicit(t *testing.T) {
+	// An explicit value in config must be preserved.
+	yaml := `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 7 Days
+    PingAnomalyThresholdMs: 5000
+Addresses:
+    Local:
+        IPv4: 127.0.0.1
+`
+	cfg, err := ParseConfig([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Schedule.PingAnomalyThresholdMs != 5000 {
+		t.Errorf("anomaly threshold: want 5000, got %d", cfg.Schedule.PingAnomalyThresholdMs)
+	}
+}
+
+func TestParseConfig_AddressOrder(t *testing.T) {
+	// Addresses are intentionally out of alphabetical order to prove that
+	// document order is preserved. Alphabetical would be: Cloudflare DNS,
+	// Gateway, Youtube. Config order is: Gateway, Cloudflare DNS, Youtube.
+	yaml := `
+Schedule:
+    Ping: 1 Minutes
+    Speedtest: OFF
+    Archiving: 1 Days
+    PingAnomalyThresholdMs: 2000
+
+Addresses:
+    Gateway:
+        IPv4: 192.168.1.1
+    Cloudflare DNS:
+        IPv4: 1.1.1.1
+    Youtube:
+        Domain: youtube.com
+        Protocol: IPv4
+`
+	cfg, err := ParseConfig([]byte(yaml))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Addresses) != 3 {
+		t.Fatalf("want 3 addresses, got %d", len(cfg.Addresses))
+	}
+	want := []string{"Gateway", "Cloudflare DNS", "Youtube"}
+	for i, name := range want {
+		if cfg.Addresses[i].Name != name {
+			t.Errorf("address[%d]: want %q, got %q", i, name, cfg.Addresses[i].Name)
+		}
 	}
 }

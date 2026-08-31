@@ -10,18 +10,18 @@ import (
 	"time"
 )
 
-// rawSpeedtest matches the JSON shape emitted by the speedtest CLI.
+// rawSpeedtest reflects the relevant subsets of the JSON payload produced by the official Ookla speedtest CLI.
 type rawSpeedtest struct {
 	Download struct {
-		Bandwidth int64 `json:"bandwidth"` // bytes/s
+		Bandwidth int64 `json:"bandwidth"` // Bandwidth in bytes per second (B/s).
 	} `json:"download"`
 	Upload struct {
-		Bandwidth int64 `json:"bandwidth"` // bytes/s
+		Bandwidth int64 `json:"bandwidth"` // Bandwidth in bytes per second (B/s).
 	} `json:"upload"`
 }
 
-// RunSpeedtest executes the speedtest CLI, parses its JSON output, and saves
-// the result into fm at the given UTC timestamp ts.
+// RunSpeedtest executes the speedtest CLI subprocess, parses the measurement output,
+// logs throughput statistics, and persists the entry into the metrics data store.
 func RunSpeedtest(ctx context.Context, fm *FileManager, logger *Logger, ts time.Time) {
 	if ctx.Err() != nil {
 		logger.Warn("speedtest run cancelled", "error", ctx.Err())
@@ -46,7 +46,8 @@ func RunSpeedtest(ctx context.Context, fm *FileManager, logger *Logger, ts time.
 	fmt.Println("[speedtest] run complete")
 }
 
-// execSpeedtest is a thin wrapper around the CLI so tests can mock it.
+// execSpeedtest wraps the external Ookla CLI invocation. Storing it in a function variable
+// allows unit tests to stub/mock execution without requiring the real speedtest binary installed.
 var execSpeedtest = func(ctx context.Context) (SpeedtestEntry, error) {
 	cmd := exec.CommandContext(
 		ctx,
@@ -57,6 +58,7 @@ var execSpeedtest = func(ctx context.Context) (SpeedtestEntry, error) {
 	)
 	out, err := cmd.Output()
 	if err != nil {
+		// If command failed with an exit error, extract stderr output to provide a descriptive error message.
 		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
 			return SpeedtestEntry{}, fmt.Errorf("speedtest command: %w (stderr: %s)", err, strings.TrimSpace(string(exitErr.Stderr)))
 		}
@@ -65,7 +67,7 @@ var execSpeedtest = func(ctx context.Context) (SpeedtestEntry, error) {
 	return parseSpeedtestOutput(out)
 }
 
-// parseSpeedtestOutput converts raw CLI JSON into a SpeedtestEntry.
+// parseSpeedtestOutput deserializes CLI JSON output and converts raw byte rates into Megabits per second.
 func parseSpeedtestOutput(data []byte) (SpeedtestEntry, error) {
 	var raw rawSpeedtest
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -77,7 +79,8 @@ func parseSpeedtestOutput(data []byte) (SpeedtestEntry, error) {
 	}, nil
 }
 
-// bpsToMbps converts bytes-per-second to Megabits-per-second, rounded to 2dp.
+// bpsToMbps converts raw byte rates (bytes/second) to Megabits per second (Mbps), rounded to 2 decimal places.
+// Formula: (Bytes/sec * 8 bits/Byte) / 1,000,000 bits/Megabit
 func bpsToMbps(bps int64) float64 {
 	mbps := float64(bps) * 8 / 1_000_000
 	return math.Round(mbps*100) / 100

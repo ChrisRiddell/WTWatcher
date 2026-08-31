@@ -35,11 +35,11 @@ func TestParseSpeedtestOutput_InvalidJSON(t *testing.T) {
 
 func TestBpsToMbps(t *testing.T) {
 	cases := []struct {
-		bps     int64
+		bps      int64
 		wantMbps float64
 	}{
-		{1_000_000, 8.00},    // 1 MB/s = 8 Mbps
-		{125_000, 1.00},      // 125 KB/s = 1 Mbps
+		{1_000_000, 8.00}, // 1 MB/s = 8 Mbps
+		{125_000, 1.00},   // 125 KB/s = 1 Mbps
 		{0, 0.00},
 		{85_339_924, 682.72}, // from spec sample
 	}

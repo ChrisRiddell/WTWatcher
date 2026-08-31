@@ -1,8 +1,8 @@
 package modules
 
 import (
+	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"strconv"
@@ -13,17 +13,24 @@ import (
 
 // ─── raw YAML shapes ───────────────────────────────────────────────────────
 
+// rawConfig represents the unvalidated, raw structure decoded directly from config.yml.
 type rawConfig struct {
-	Schedule  rawSchedule             `yaml:"Schedule"`
-	Addresses map[string]rawAddress   `yaml:"Addresses"`
+	Schedule rawSchedule `yaml:"Schedule"`
+	// Addresses is intentionally unmarshaled as a yaml.Node AST instead of a Go map.
+	// In Go, map iteration order is randomized by design; using yaml.Node allows us
+	// to iterate over the YAML MappingNode entries in the exact order the user authored them.
+	Addresses yaml.Node `yaml:"Addresses"`
 }
 
+// rawSchedule holds unparsed interval strings and the ping anomaly threshold.
 type rawSchedule struct {
-	Ping      string `yaml:"Ping"`
-	Speedtest string `yaml:"Speedtest"`
-	Archiving string `yaml:"Archiving"`
+	Ping                   string `yaml:"Ping"`
+	Speedtest              string `yaml:"Speedtest"`
+	Archiving              string `yaml:"Archiving"`
+	PingAnomalyThresholdMs int64  `yaml:"PingAnomalyThresholdMs"`
 }
 
+// rawAddress holds string values for an individual target under the Addresses section.
 type rawAddress struct {
 	IPv4     string `yaml:"IPv4"`
 	IPv6     string `yaml:"IPv6"`
@@ -33,31 +40,35 @@ type rawAddress struct {
 
 // ─── parsed / validated shapes ─────────────────────────────────────────────
 
-// Config is the validated, ready-to-use configuration.
+// Config is the validated, fully parsed configuration ready for runtime use.
 type Config struct {
 	Schedule  Schedule
 	Addresses []Address
 }
 
-// Schedule holds interval durations in seconds.
+// Schedule holds validated interval durations converted into seconds for easy timer arithmetic.
 type Schedule struct {
 	PingSeconds      int64
 	SpeedtestSeconds int64
 	ArchivingSeconds int64
+	// PingAnomalyThresholdMs is the upper bound for realistic per-packet RTT in milliseconds.
+	// Any sample above Q3 + 1.5×IQR that also exceeds this ceiling is treated as an OS/scheduler
+	// spike (e.g. CPU contention, sleep/wake, GC stall) and marked as an anomaly. Default is 2000ms.
+	PingAnomalyThresholdMs int64
 }
 
-// Address represents a single monitoring target.
+// Address represents a validated monitoring target with typed IP addresses or domain name.
 type Address struct {
 	Name     string
 	IPv4     *netip.Addr
 	IPv6     *netip.Addr
 	Domain   string
-	Protocol string // "IPv4", "IPv6", "Both", or "" (unused for raw IPs)
+	Protocol string // Target protocol for domains: "IPv4", "IPv6", or "Both"
 }
 
 // ─── public API ────────────────────────────────────────────────────────────
 
-// LoadConfig reads and validates the YAML file at path.
+// LoadConfig reads the YAML configuration file from disk, parses, and validates its contents.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -66,8 +77,8 @@ func LoadConfig(path string) (*Config, error) {
 	return ParseConfig(data)
 }
 
-// ParseConfig validates raw YAML bytes and returns a *Config. Exported so
-// tests can call it without needing a real file.
+// ParseConfig validates raw YAML bytes and returns a typed *Config.
+// This is exported so unit tests can test configuration parsing in-memory without filesystem access.
 func ParseConfig(data []byte) (*Config, error) {
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
@@ -79,7 +90,7 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	addrs, err := parseAddresses(raw.Addresses)
+	addrs, err := parseAddresses(&raw.Addresses)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +100,7 @@ func ParseConfig(data []byte) (*Config, error) {
 
 // ─── internal helpers ──────────────────────────────────────────────────────
 
+// parseSchedule validates each interval string and converts durations to whole seconds.
 func parseSchedule(r rawSchedule) (Schedule, error) {
 	ping, err := parseInterval(r.Ping, "Schedule.Ping")
 	if err != nil {
@@ -102,18 +114,25 @@ func parseSchedule(r rawSchedule) (Schedule, error) {
 	if err != nil {
 		return Schedule{}, err
 	}
+
+	anomalyThresholdMs := r.PingAnomalyThresholdMs
+	if anomalyThresholdMs <= 0 {
+		return Schedule{}, fmt.Errorf("Schedule.PingAnomalyThresholdMs: must be a positive number of milliseconds (e.g. 2000)")
+	}
+
 	return Schedule{
-		PingSeconds:      ping,
-		SpeedtestSeconds: speedtest,
-		ArchivingSeconds: archiving,
+		PingSeconds:            ping,
+		SpeedtestSeconds:       speedtest,
+		ArchivingSeconds:       archiving,
+		PingAnomalyThresholdMs: anomalyThresholdMs,
 	}, nil
 }
 
-// parseInterval converts strings like "15 Minutes", "3 Hours", "14 Days"
-// into a whole number of seconds. It returns 0 if the string is "OFF".
+// parseInterval parses human-friendly duration strings like "15 Minutes", "3 Hours", "14 Days"
+// into seconds. If the value is "OFF" (case-insensitive), it returns 0 (disabling the task).
 func parseInterval(s, field string) (int64, error) {
 	s = strings.TrimSpace(s)
-	if strings.ToUpper(s) == "OFF" {
+	if strings.EqualFold(s, "off") {
 		return 0, nil
 	}
 	parts := strings.Fields(s)
@@ -136,10 +155,38 @@ func parseInterval(s, field string) (int64, error) {
 	}
 }
 
-func parseAddresses(raw map[string]rawAddress) ([]Address, error) {
-	addrs := make([]Address, 0, len(raw))
-	for name, r := range raw {
-		a, err := parseAddress(name, r)
+// parseAddresses walks the yaml.Node AST of the Addresses mapping in document order,
+// ensuring the ordered slice of Address objects matches the exact sequence in config.yml.
+func parseAddresses(node *yaml.Node) ([]Address, error) {
+	// Resolve YAML anchor or alias nodes if present.
+	n := node
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+
+	// An empty or null Addresses block is permitted (e.g. empty target list).
+	if n.Kind == 0 || n.Tag == "!!null" || len(n.Content) == 0 {
+		return nil, nil
+	}
+
+	if n.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("Addresses: expected a YAML mapping, got kind %v", n.Kind)
+	}
+
+	// In yaml.v3, MappingNode.Content contains interleaved key and value nodes: [key0, val0, key1, val1, ...]
+	addrs := make([]Address, 0, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		keyNode := n.Content[i]
+		valNode := n.Content[i+1]
+
+		name := keyNode.Value
+
+		var raw rawAddress
+		if err := valNode.Decode(&raw); err != nil {
+			return nil, fmt.Errorf("Addresses.%s: %w", name, err)
+		}
+
+		a, err := parseAddress(name, raw)
 		if err != nil {
 			return nil, err
 		}
@@ -148,6 +195,8 @@ func parseAddresses(raw map[string]rawAddress) ([]Address, error) {
 	return addrs, nil
 }
 
+// parseAddress validates individual target fields: parsing and verifying IP address formats,
+// validating domains, and verifying protocol choices ("IPv4", "IPv6", "Both").
 func parseAddress(name string, r rawAddress) (Address, error) {
 	a := Address{Name: name}
 
@@ -156,7 +205,7 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 		addr, err := netip.ParseAddr(strings.TrimSpace(r.IPv4))
 		if err != nil || !addr.Is4() {
 			if err == nil {
-				err = fmt.Errorf("not an IPv4 address")
+				err = errors.New("not an IPv4 address")
 			}
 			return Address{}, fmt.Errorf("Addresses.%s: invalid IPv4 address %q: %w", name, r.IPv4, err)
 		}
@@ -167,7 +216,7 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 		addr, err := netip.ParseAddr(strings.TrimSpace(r.IPv6))
 		if err != nil || !addr.Is6() {
 			if err == nil {
-				err = fmt.Errorf("not an IPv6 address")
+				err = errors.New("not an IPv6 address")
 			}
 			return Address{}, fmt.Errorf("Addresses.%s: invalid IPv6 address %q: %w", name, r.IPv6, err)
 		}
@@ -181,10 +230,10 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 		}
 		a.Domain = strings.TrimSpace(r.Domain)
 
-		// Protocol is only relevant for domain targets.
+		// Protocol option determines whether to ping IPv4, IPv6, or both DNS records.
 		proto := strings.TrimSpace(r.Protocol)
 		if proto == "" {
-			proto = "IPv4" // sensible default
+			proto = "IPv4" // Default to IPv4 if unspecified.
 		}
 		switch proto {
 		case "IPv4", "IPv6", "Both":
@@ -199,28 +248,27 @@ func parseAddress(name string, r rawAddress) (Address, error) {
 	return a, nil
 }
 
-// validateDomain performs a lightweight structural check on a domain name.
+// validateDomain performs an offline syntactic validation of domain strings to avoid network lookups during config load.
 func validateDomain(domain string) error {
 	d := strings.TrimSpace(domain)
 	if d == "" {
-		return fmt.Errorf("domain must not be empty")
+		return errors.New("domain must not be empty")
 	}
-	// net.LookupHost is not called here so tests stay offline; instead we do a
-	// simple label-based structural check.
+	// Check for invalid whitespace within the domain name.
 	if strings.Contains(d, " ") {
 		return fmt.Errorf("invalid domain %q: contains spaces", d)
 	}
-	for _, label := range strings.Split(d, ".") {
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return fmt.Errorf("invalid domain %q: no dots", d)
+	}
+	for _, label := range labels {
 		if label == "" {
 			return fmt.Errorf("invalid domain %q: empty label", d)
 		}
 	}
-	// Quick sanity: must have at least one dot.
-	if !strings.Contains(d, ".") {
-		return fmt.Errorf("invalid domain %q: no dots", d)
-	}
-	// Use net.LookupCNAME offline parser indirectly: just try parsing as host.
-	if net.ParseIP(d) != nil {
+	// Ensure an IP address wasn't mistakenly entered in the Domain field.
+	if _, err := netip.ParseAddr(d); err == nil {
 		return fmt.Errorf("invalid domain %q: looks like an IP address", d)
 	}
 	return nil

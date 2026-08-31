@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,7 +16,7 @@ func newTestFM(t *testing.T) (*FileManager, string) {
 	dir := t.TempDir()
 	metricsPath := filepath.Join(dir, "public", "metrics.json")
 	archiveDir := filepath.Join(dir, "archive")
-	fm, err := NewFileManager(metricsPath, archiveDir)
+	fm, err := NewFileManager(metricsPath, archiveDir, nil)
 	if err != nil {
 		t.Fatalf("NewFileManager: %v", err)
 	}
@@ -25,7 +26,7 @@ func newTestFM(t *testing.T) (*FileManager, string) {
 // ─── tests ──────────────────────────────────────────────────────────────────
 
 func TestFileManager_AddLatency(t *testing.T) {
-	fm, _ := newTestFM(t)
+	fm, dir := newTestFM(t)
 
 	ts := time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC)
 	entry := LatencyEntry{Average: 1.5, Protocol: "IPv4"}
@@ -47,12 +48,25 @@ func TestFileManager_AddLatency(t *testing.T) {
 	if !ok {
 		t.Fatal("time key missing")
 	}
-	entries, ok := slot.Latency["Gateway"]
-	if !ok || len(entries) != 1 {
+	entries := slot.Latency.Get("Gateway")
+	if entries == nil || len(entries) != 1 {
 		t.Fatalf("expected 1 gateway entry, got %v", slot.Latency)
 	}
 	if entries[0].Average != 1.5 {
 		t.Errorf("average: want 1.5, got %v", entries[0].Average)
+	}
+
+	// Verify an anomaly entry ignores RawAverage during serialization.
+	entryAnomaly := LatencyEntry{Average: 3.12, RawAverage: 2150.5, Protocol: "IPv4", IsAnomaly: true}
+	if err := fm.AddLatency(ts, "Youtube", entryAnomaly); err != nil {
+		t.Fatalf("AddLatency anomaly: %v", err)
+	}
+	rawBytes, err := os.ReadFile(filepath.Join(dir, "public", "metrics.json"))
+	if err != nil {
+		t.Fatalf("read raw metrics: %v", err)
+	}
+	if strings.Contains(string(rawBytes), "raw_average") || strings.Contains(string(rawBytes), "RawAverage") {
+		t.Errorf("metrics.json should not contain raw_average: %s", string(rawBytes))
 	}
 }
 
@@ -192,10 +206,54 @@ func TestFileManager_MetricsJSONStructure(t *testing.T) {
 	if len(day["00:00:00Z"].Latency) != 3 {
 		t.Errorf("expected 3 latency hosts, got %d", len(day["00:00:00Z"].Latency))
 	}
-	if len(day["00:00:00Z"].Latency["Youtube"]) != 2 {
-		t.Errorf("expected 2 Youtube entries (v4+v6), got %d", len(day["00:00:00Z"].Latency["Youtube"]))
+	if len(day["00:00:00Z"].Latency.Get("Youtube")) != 2 {
+		t.Errorf("expected 2 Youtube entries (v4+v6), got %d", len(day["00:00:00Z"].Latency.Get("Youtube")))
 	}
 	if len(day["03:00:00Z"].Speedtest) != 1 {
 		t.Errorf("expected 1 speedtest entry, got %d", len(day["03:00:00Z"].Speedtest))
+	}
+}
+
+func TestFileManager_LatencyOrder(t *testing.T) {
+	// Add targets in config order (Gateway → Cloudflare DNS → Youtube) and
+	// confirm that the JSON emits them in that exact order, not alphabetically.
+	fm, _ := newTestFM(t)
+	ts := time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC)
+
+	for _, name := range []string{"Gateway", "Cloudflare DNS", "Youtube"} {
+		if err := fm.AddLatency(ts, name, LatencyEntry{Average: 1.0, Protocol: "IPv4"}); err != nil {
+			t.Fatalf("AddLatency(%s): %v", name, err)
+		}
+	}
+
+	data, err := fm.ReadMetrics()
+	if err != nil {
+		t.Fatalf("ReadMetrics: %v", err)
+	}
+
+	latency := data["2026-04-26"]["00:00:00Z"].Latency
+	if len(latency) != 3 {
+		t.Fatalf("want 3 latency entries, got %d", len(latency))
+	}
+
+	wantOrder := []string{"Gateway", "Cloudflare DNS", "Youtube"}
+	for i, want := range wantOrder {
+		if latency[i].Name != want {
+			t.Errorf("latency[%d]: want %q, got %q", i, want, latency[i].Name)
+		}
+	}
+
+	// Also confirm the JSON text has the keys in the right order.
+	raw, err := json.Marshal(latency)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	text := string(raw)
+	gatewayIdx := strings.Index(text, `"Gateway"`)
+	cfIdx := strings.Index(text, `"Cloudflare DNS"`)
+	youtubeIdx := strings.Index(text, `"Youtube"`)
+	if !(gatewayIdx < cfIdx && cfIdx < youtubeIdx) {
+		t.Errorf("JSON key order wrong: Gateway=%d Cloudflare DNS=%d Youtube=%d\nJSON: %s",
+			gatewayIdx, cfIdx, youtubeIdx, text)
 	}
 }

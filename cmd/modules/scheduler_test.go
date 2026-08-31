@@ -16,7 +16,7 @@ func TestScheduler_StartStop(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive")
+	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive", nil)
 	if err != nil {
 		t.Fatalf("NewFileManager: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestScheduler_TaskFires(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive")
+	fm, err := NewFileManager(dir+"/metrics.json", dir+"/archive", nil)
 	if err != nil {
 		t.Fatalf("NewFileManager: %v", err)
 	}
@@ -128,4 +128,3 @@ func TestFormatConsoleTime(t *testing.T) {
 		t.Errorf("formatConsoleTime: want %q, got %q", want, got)
 	}
 }
-
