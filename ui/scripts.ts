@@ -414,7 +414,7 @@ function updateSpeedCard(data: ParsedDataPoint[]): void {
 
   ui.latestDownload.textContent = latest.speedtest.download.toFixed(0);
   ui.latestUpload.textContent = latest.speedtest.upload.toFixed(0);
-  ui.speedTime.textContent = `LAST TEST AT ${latest.formattedTime}`;
+  ui.speedTime.textContent = `Speedtest (${latest.formattedTime})`;
 }
 
 function destroyCharts(): void {
