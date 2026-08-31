@@ -101,7 +101,7 @@ function parseData(json) {
             localDateSet.add(userLocalDate);
             parsedPoints.push({
                 timestamp: dt.toMillis(),
-                formattedTime: dt.toFormat('HH:mm:ss'),
+                formattedTime: dt.toFormat('HH:mm'),
                 date: userLocalDate,
                 speedtest: entry.speedtest?.[0],
                 latency: normalizeLatency(entry.latency)

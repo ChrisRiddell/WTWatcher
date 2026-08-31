@@ -36,7 +36,7 @@ type LatencyTarget = Record<string, NormalizedLatencyEntry[]>;
 
 interface ParsedDataPoint {
   timestamp: number;     // Epoc ms for fast sorting/filtering
-  formattedTime: string; // Local HH:mm:ss for charts & displays
+  formattedTime: string; // Local HH:mm for charts & displays
   date: string;          // User's local date (yyyy-MM-dd)
   speedtest?: SpeedtestEntry;
   latency?: LatencyTarget;
@@ -180,7 +180,7 @@ function parseData(json: RawDataPayload): void {
 
       parsedPoints.push({
         timestamp: dt.toMillis(),
-        formattedTime: dt.toFormat('HH:mm:ss'),
+        formattedTime: dt.toFormat('HH:mm'),
         date: userLocalDate,
         speedtest: entry.speedtest?.[0],
         latency: normalizeLatency(entry.latency)
