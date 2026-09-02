@@ -1,8 +1,14 @@
 ---
 Schedule:
-    Ping: 10 Minutes # Minutes or Hours
+    Ping: 1 Minutes # Minutes or Hours
     Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
     Archiving: 14 Days # Minutes, Hours or Days
+    LogRotation: 14 Days # Days, Months or OFF
+
+Ping:
+    PingCount: 4 # Number of ICMP packets sent per probe cycle.
+    PingTimeout: 10 Seconds # Overall timeout for completing a probe.
+    PingRetries: 2 # Max retry attempts on probe failure before giving up.
     PingAnomalyThresholdMs: 2000 # Max realistic ping (ms). Spikes above this are filtered as anomalies.
 
 Addresses:

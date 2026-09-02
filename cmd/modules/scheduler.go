@@ -72,7 +72,7 @@ func (s *Scheduler) Start() {
 
 	now := time.Now().UTC()
 
-	s.tasks = make([]*task, 0, 3)
+	s.tasks = make([]*task, 0, 4)
 
 	addTask := func(name string, seconds int64, fn func(context.Context)) {
 		if seconds <= 0 {
@@ -107,6 +107,19 @@ func (s *Scheduler) Start() {
 		} else {
 			s.logger.Info("archiving completed")
 			fmt.Println("[archive] run complete")
+		}
+	})
+
+	addTask("log rotate", s.cfg.Schedule.LogRotationSeconds, func(ctx context.Context) {
+		ts := time.Now().UTC()
+		fmt.Printf("[log rotate] starting log rotation run at %s\n", formatConsoleTime(ts))
+
+		if err := s.logger.Rotate(); err != nil {
+			s.logger.Error("log rotation failed", "error", err)
+			fmt.Printf("[log rotate] FAILED: %v\n", err)
+		} else {
+			s.logger.Info("log rotation completed")
+			fmt.Println("[log rotate] run complete")
 		}
 	})
 

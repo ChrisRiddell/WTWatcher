@@ -32,6 +32,7 @@ Schedule:
     Ping: 5 Minutes # Minutes or Hours
     Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
     Archiving: 14 Days # Minutes, Hours or Days
+    LogRotation: 14 Days # Days, Months or OFF
 
 Addresses:
     Gateway:

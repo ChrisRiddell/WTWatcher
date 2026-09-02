@@ -16,17 +16,30 @@ import (
 // rawConfig represents the unvalidated, raw structure decoded directly from config.yml.
 type rawConfig struct {
 	Schedule rawSchedule `yaml:"Schedule"`
+	Ping     rawPing     `yaml:"Ping"`
 	// Addresses is intentionally unmarshaled as a yaml.Node AST instead of a Go map.
 	// In Go, map iteration order is randomized by design; using yaml.Node allows us
 	// to iterate over the YAML MappingNode entries in the exact order the user authored them.
 	Addresses yaml.Node `yaml:"Addresses"`
 }
 
-// rawSchedule holds unparsed interval strings and the ping anomaly threshold.
+// rawSchedule holds unparsed interval strings.
 type rawSchedule struct {
-	Ping                   string `yaml:"Ping"`
-	Speedtest              string `yaml:"Speedtest"`
-	Archiving              string `yaml:"Archiving"`
+	Ping        string `yaml:"Ping"`
+	Speedtest   string `yaml:"Speedtest"`
+	Archiving   string `yaml:"Archiving"`
+	LogRotation string `yaml:"LogRotation"`
+}
+
+// rawPing holds unparsed ping probe parameters and the anomaly threshold.
+type rawPing struct {
+	Count                  int    `yaml:"Count"`
+	PingCount              int    `yaml:"PingCount"`
+	Timeout                string `yaml:"Timeout"`
+	PingTimeout            string `yaml:"PingTimeout"`
+	Retries                *int   `yaml:"Retries"`
+	PingRetries            *int   `yaml:"PingRetries"`
+	AnomalyThresholdMs     int64  `yaml:"AnomalyThresholdMs"`
 	PingAnomalyThresholdMs int64  `yaml:"PingAnomalyThresholdMs"`
 }
 
@@ -43,14 +56,23 @@ type rawAddress struct {
 // Config is the validated, fully parsed configuration ready for runtime use.
 type Config struct {
 	Schedule  Schedule
+	Ping      Ping
 	Addresses []Address
 }
 
 // Schedule holds validated interval durations converted into seconds for easy timer arithmetic.
 type Schedule struct {
-	PingSeconds      int64
-	SpeedtestSeconds int64
-	ArchivingSeconds int64
+	PingSeconds        int64
+	SpeedtestSeconds   int64
+	ArchivingSeconds   int64
+	LogRotationSeconds int64
+}
+
+// Ping holds validated probe parameters and anomaly filtering settings for ICMP ping.
+type Ping struct {
+	Count          int
+	TimeoutSeconds int64
+	Retries        int
 	// PingAnomalyThresholdMs is the upper bound for realistic per-packet RTT in milliseconds.
 	// Any sample above Q3 + 1.5×IQR that also exceeds this ceiling is treated as an OS/scheduler
 	// spike (e.g. CPU contention, sleep/wake, GC stall) and marked as an anomaly. Default is 2000ms.
@@ -90,12 +112,17 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, err
 	}
 
+	ping, err := parsePing(raw.Ping)
+	if err != nil {
+		return nil, err
+	}
+
 	addrs, err := parseAddresses(&raw.Addresses)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Config{Schedule: sched, Addresses: addrs}, nil
+	return &Config{Schedule: sched, Ping: ping, Addresses: addrs}, nil
 }
 
 // ─── internal helpers ──────────────────────────────────────────────────────
@@ -114,21 +141,72 @@ func parseSchedule(r rawSchedule) (Schedule, error) {
 	if err != nil {
 		return Schedule{}, err
 	}
-
-	anomalyThresholdMs := r.PingAnomalyThresholdMs
-	if anomalyThresholdMs <= 0 {
-		return Schedule{}, fmt.Errorf("Schedule.PingAnomalyThresholdMs: must be a positive number of milliseconds (e.g. 2000)")
+	logRotation, err := parseLogRotationInterval(r.LogRotation, "Schedule.LogRotation")
+	if err != nil {
+		return Schedule{}, err
 	}
 
 	return Schedule{
-		PingSeconds:            ping,
-		SpeedtestSeconds:       speedtest,
-		ArchivingSeconds:       archiving,
+		PingSeconds:        ping,
+		SpeedtestSeconds:   speedtest,
+		ArchivingSeconds:   archiving,
+		LogRotationSeconds: logRotation,
+	}, nil
+}
+
+// parsePing validates probe parameters and anomaly filtering thresholds.
+func parsePing(r rawPing) (Ping, error) {
+	count := r.PingCount
+	if count == 0 {
+		count = r.Count
+	}
+	if count <= 0 {
+		return Ping{}, fmt.Errorf("Ping.PingCount: must be a positive number of packets (e.g. 4)")
+	}
+
+	timeoutStr := r.PingTimeout
+	if timeoutStr == "" {
+		timeoutStr = r.Timeout
+	}
+	if timeoutStr == "" {
+		return Ping{}, fmt.Errorf("Ping.PingTimeout: duration string is required (e.g. \"10 Seconds\")")
+	}
+	timeoutSec, err := parseInterval(timeoutStr, "Ping.PingTimeout")
+	if err != nil {
+		return Ping{}, err
+	}
+	if timeoutSec <= 0 {
+		return Ping{}, fmt.Errorf("Ping.PingTimeout: must be a positive duration (e.g. \"10 Seconds\")")
+	}
+
+	retriesPtr := r.PingRetries
+	if retriesPtr == nil {
+		retriesPtr = r.Retries
+	}
+	if retriesPtr == nil {
+		return Ping{}, fmt.Errorf("Ping.PingRetries: must be specified (e.g. 2, or 0 to disable retries)")
+	}
+	if *retriesPtr < 0 {
+		return Ping{}, fmt.Errorf("Ping.PingRetries: must be a non-negative integer (e.g. 2)")
+	}
+
+	anomalyThresholdMs := r.PingAnomalyThresholdMs
+	if anomalyThresholdMs == 0 {
+		anomalyThresholdMs = r.AnomalyThresholdMs
+	}
+	if anomalyThresholdMs <= 0 {
+		return Ping{}, fmt.Errorf("Ping.PingAnomalyThresholdMs: must be a positive number of milliseconds (e.g. 2000)")
+	}
+
+	return Ping{
+		Count:                  count,
+		TimeoutSeconds:         timeoutSec,
+		Retries:                *retriesPtr,
 		PingAnomalyThresholdMs: anomalyThresholdMs,
 	}, nil
 }
 
-// parseInterval parses human-friendly duration strings like "15 Minutes", "3 Hours", "14 Days"
+// parseInterval parses human-friendly duration strings like "10 Seconds", "15 Minutes", "3 Hours", "14 Days"
 // into seconds. If the value is "OFF" (case-insensitive), it returns 0 (disabling the task).
 func parseInterval(s, field string) (int64, error) {
 	s = strings.TrimSpace(s)
@@ -137,13 +215,15 @@ func parseInterval(s, field string) (int64, error) {
 	}
 	parts := strings.Fields(s)
 	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Minutes|Hours|Days\")", field, s)
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Seconds|Minutes|Hours|Days\")", field, s)
 	}
 	n, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil || n <= 0 {
 		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
 	}
 	switch strings.ToLower(parts[1]) {
+	case "second", "seconds":
+		return n, nil
 	case "minute", "minutes":
 		return n * 60, nil
 	case "hour", "hours":
@@ -151,7 +231,32 @@ func parseInterval(s, field string) (int64, error) {
 	case "day", "days":
 		return n * 86400, nil
 	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Minutes, Hours, or Days)", field, parts[1])
+		return 0, fmt.Errorf("%s: unknown unit %q (use Seconds, Minutes, Hours, or Days)", field, parts[1])
+	}
+}
+
+// parseLogRotationInterval parses duration strings specifically for Schedule.LogRotation.
+// It supports "OFF" (returns 0), "Days", and "Months" (calculated as 30 days per month).
+func parseLogRotationInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "off") {
+		return 0, nil
+	}
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Days|Months\" or \"OFF\")", field, s)
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+	switch strings.ToLower(parts[1]) {
+	case "day", "days":
+		return n * 86400, nil
+	case "month", "months":
+		return n * 30 * 86400, nil
+	default:
+		return 0, fmt.Errorf("%s: unknown unit %q (use Days, Months, or OFF)", field, parts[1])
 	}
 }
 

@@ -15,12 +15,6 @@ import (
 	probing "github.com/prometheus-community/pro-bing"
 )
 
-const (
-	pingCount   = 4                // Number of ICMP packets sent per probe cycle.
-	pingTimeout = 10 * time.Second // Overall timeout for completing a 4-packet probe.
-	pingRetries = 2                // Max retry attempts on probe failure before giving up.
-)
-
 // RunPing iterates over all targets in Config, resolves their network endpoints,
 // measures ICMP round-trip latency and packet loss, checks for statistical anomalies,
 // and saves the results to the FileManager.
@@ -43,7 +37,7 @@ func RunPing(ctx context.Context, cfg *Config, fm *FileManager, logger *Logger, 
 				logger.Warn("ping run cancelled", "error", ctx.Err())
 				return
 			}
-			entry, err := pingWithRetry(ctx, t.host, t.proto, pingRetries, cfg.Schedule.PingAnomalyThresholdMs)
+			entry, err := pingWithRetry(ctx, t.host, t.proto, cfg.Ping)
 			if err != nil {
 				logger.Error("ping failed",
 					"name", addr.Name, "host", t.host, "proto", t.proto, "error", err)
@@ -139,14 +133,14 @@ func resolveBoth(domain string) ([]pingTarget, error) {
 	return targets, nil
 }
 
-// pingWithRetry executes doPing up to retries additional times if errors occur.
-func pingWithRetry(ctx context.Context, host, proto string, retries int, anomalyThresholdMs int64) (LatencyEntry, error) {
+// pingWithRetry executes doPing up to cfg.Retries additional times if errors occur.
+func pingWithRetry(ctx context.Context, host, proto string, pingCfg Ping) (LatencyEntry, error) {
 	var lastErr error
-	for i := 0; i <= retries; i++ {
+	for i := 0; i <= pingCfg.Retries; i++ {
 		if ctx.Err() != nil {
 			return LatencyEntry{}, ctx.Err()
 		}
-		entry, err := doPing(ctx, host, proto, anomalyThresholdMs)
+		entry, err := doPing(ctx, host, proto, pingCfg)
 		if err == nil {
 			return entry, nil
 		}
@@ -156,7 +150,7 @@ func pingWithRetry(ctx context.Context, host, proto string, retries int, anomaly
 }
 
 // doPing determines network routing type ("ip4" or "ip6") and socket privilege mode before executing runPinger.
-func doPing(ctx context.Context, host, proto string, anomalyThresholdMs int64) (LatencyEntry, error) {
+func doPing(ctx context.Context, host, proto string, pingCfg Ping) (LatencyEntry, error) {
 	network := "ip4"
 	if proto == "IPv6" {
 		network = "ip6"
@@ -167,14 +161,15 @@ func doPing(ctx context.Context, host, proto string, anomalyThresholdMs int64) (
 	// so we default to unprivileged UDP-based ICMP when not running as root.
 	privileged := os.Getuid() == 0
 
-	return runPinger(ctx, host, network, proto, privileged, anomalyThresholdMs)
+	return runPinger(ctx, host, network, proto, privileged, pingCfg)
 }
 
 // runPinger initializes and executes a pro-bing pinger instance.
 // If privileged raw socket mode fails with a permission error, it automatically retries
 // using unprivileged ICMP datagram sockets.
-func runPinger(ctx context.Context, host, network, proto string, privileged bool, anomalyThresholdMs int64) (LatencyEntry, error) {
-	pCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+func runPinger(ctx context.Context, host, network, proto string, privileged bool, pingCfg Ping) (LatencyEntry, error) {
+	timeout := time.Duration(pingCfg.TimeoutSeconds) * time.Second
+	pCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	pinger, err := probing.NewPinger(host)
@@ -182,8 +177,8 @@ func runPinger(ctx context.Context, host, network, proto string, privileged bool
 		return LatencyEntry{}, fmt.Errorf("create pinger for %q: %w", host, err)
 	}
 	pinger.SetNetwork(network)
-	pinger.Count = pingCount
-	pinger.Timeout = pingTimeout
+	pinger.Count = pingCfg.Count
+	pinger.Timeout = timeout
 	pinger.SetPrivileged(privileged)
 
 	done := make(chan error, 1)
@@ -195,7 +190,7 @@ func runPinger(ctx context.Context, host, network, proto string, privileged bool
 			// On permission denial (e.g. non-root on Darwin or missing CAP_NET_RAW on Linux),
 			// transparently retry using unprivileged UDP ICMP.
 			if privileged && isPermissionError(err) {
-				return runPinger(ctx, host, network, proto, false, anomalyThresholdMs)
+				return runPinger(ctx, host, network, proto, false, pingCfg)
 			}
 			return LatencyEntry{}, fmt.Errorf("ping %q: %w", host, err)
 		}
@@ -223,7 +218,7 @@ func runPinger(ctx context.Context, host, network, proto string, privileged bool
 	// We apply Tukey's Interquartile Range (IQR) fence to per-packet RTTs.
 	// If outliers exceeding anomalyThresholdMs are detected, replace the average
 	// with the clean sample average, retain the unfiltered raw average, and flag IsAnomaly.
-	filtered := filterAnomalyRTTs(stats.Rtts, anomalyThresholdMs)
+	filtered := filterAnomalyRTTs(stats.Rtts, pingCfg.PingAnomalyThresholdMs)
 	if filtered != nil {
 		var sum float64
 		for _, rtt := range filtered {
