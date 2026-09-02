@@ -570,9 +570,16 @@ function computeAllLatencyStats(
     }
   }
 
-  if (!history.size || !latestPoint) return [];
+  if (!history.size || !latestPoint || !latestPoint.latency) return [];
 
-  return Array.from(history.keys())
+  // Order targets based on the latest data point to preserve the backend's configured order
+  // (e.g. Gateway, Cloudflare DNS, Youtube), falling back to historical targets if any were missed.
+  const targetOrder = new Set<string>([
+    ...Object.keys(latestPoint.latency),
+    ...history.keys()
+  ]);
+
+  return Array.from(targetOrder)
     .map((target) =>
       computeLatencyStats(target, history, latestPoint, protocolFilter)
     )
