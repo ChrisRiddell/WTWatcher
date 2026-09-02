@@ -590,3 +590,176 @@ Schedule:
 		})
 	}
 }
+
+func TestParseConfig_ArchivingValidation(t *testing.T) {
+	base := `
+Ping:
+    PingCount: 4
+    PingTimeout: 10 Seconds
+    PingRetries: 2
+    PingAnomalyThresholdMs: 2000
+Addresses:
+    Local:
+        IPv4: 127.0.0.1
+`
+	tests := []struct {
+		name       string
+		schedBlock string
+		wantErr    bool
+		wantSec    int64
+	}{
+		{
+			name: "14 Days",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 14 Days
+    LogRotation: 14 Days
+`,
+			wantErr: false,
+			wantSec: 14 * 86400,
+		},
+		{
+			name: "1 Day singular",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 1 Day
+    LogRotation: 14 Days
+`,
+			wantErr: false,
+			wantSec: 86400,
+		},
+		{
+			name: "1 Month singular",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 1 Month
+    LogRotation: 14 Days
+`,
+			wantErr: false,
+			wantSec: 30 * 86400,
+		},
+		{
+			name: "3 Months plural",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 3 Months
+    LogRotation: 14 Days
+`,
+			wantErr: false,
+			wantSec: 90 * 86400,
+		},
+		{
+			name: "disallowed OFF uppercase",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: OFF
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "disallowed off lowercase",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: off
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "disallowed Minutes unit",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 15 Minutes
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "disallowed Hours unit",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 2 Hours
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "missing Archiving field",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "invalid number",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: abc Days
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "zero days",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 0 Days
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+		{
+			name: "negative days",
+			schedBlock: `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: -5 Days
+    LogRotation: 14 Days
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := tc.schedBlock + base
+			cfg, err := ParseConfig([]byte(raw))
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if cfg.Schedule.ArchivingSeconds != tc.wantSec {
+					t.Errorf("ArchivingSeconds: want %d, got %d", tc.wantSec, cfg.Schedule.ArchivingSeconds)
+				}
+			}
+		})
+	}
+}

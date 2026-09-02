@@ -137,7 +137,7 @@ func parseSchedule(r rawSchedule) (Schedule, error) {
 	if err != nil {
 		return Schedule{}, err
 	}
-	archiving, err := parseInterval(r.Archiving, "Schedule.Archiving")
+	archiving, err := parseArchivingInterval(r.Archiving, "Schedule.Archiving")
 	if err != nil {
 		return Schedule{}, err
 	}
@@ -257,6 +257,28 @@ func parseLogRotationInterval(s, field string) (int64, error) {
 		return n * 30 * 86400, nil
 	default:
 		return 0, fmt.Errorf("%s: unknown unit %q (use Days, Months, or OFF)", field, parts[1])
+	}
+}
+
+// parseArchivingInterval parses duration strings specifically for Schedule.Archiving.
+// It supports "Days" and "Months" (calculated as 30 days per month) with no option for "OFF".
+func parseArchivingInterval(s, field string) (int64, error) {
+	s = strings.TrimSpace(s)
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Days|Months\")", field, s)
+	}
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+	switch strings.ToLower(parts[1]) {
+	case "day", "days":
+		return n * 86400, nil
+	case "month", "months":
+		return n * 30 * 86400, nil
+	default:
+		return 0, fmt.Errorf("%s: unknown unit %q (use Days or Months)", field, parts[1])
 	}
 }
 

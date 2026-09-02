@@ -112,7 +112,7 @@ func bootstrap(configPath string) error {
 Schedule:
     Ping: 5 Minutes # Minutes or Hours
     Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
-    Archiving: 14 Days # Minutes, Hours or Days
+    Archiving: 14 Days # Days or Months
     LogRotation: 14 Days # Days, Months or OFF
 
 Ping:
