@@ -5,7 +5,7 @@ import { DateTime } from "luxon";
 
 // Protocol families supported for latency measurement targets.
 type Protocol = "IPv4" | "IPv6";
-type ProtocolFilter = Protocol | "Both";
+type ProtocolFilter = Protocol | "IPv4 + IPv6";
 
 // Theme modes: user explicit preference ('light' | 'dark') or OS auto-detection ('system').
 type Theme = "light" | "dark" | "system";
@@ -409,7 +409,7 @@ function getFilteredData(): ParsedDataPoint[] {
 
   return rawData.filter((point) => {
     if (point.date !== selectedDate) return false;
-    if (!point.latency || selectedProtocol === "Both") return true;
+    if (!point.latency || selectedProtocol === "IPv4 + IPv6") return true;
 
     // Filter points to only those containing samples matching the selected protocol.
     return Object.values(point.latency).some((entries) =>
@@ -503,7 +503,7 @@ function computeLatencyStats(
 
   const latestEntries: LatencyStatEntry[] = rawLatestEntries
     .filter(
-      (entry) => protocolFilter === "Both" || entry.protocol === protocolFilter,
+      (entry) => protocolFilter === "IPv4 + IPv6" || entry.protocol === protocolFilter,
     )
     .map((entry) => {
       const protocolValues = targetHistory.get(entry.protocol) ?? [
@@ -813,12 +813,12 @@ function buildLatencySeries(
 
     for (const [target, entries] of Object.entries(point.latency)) {
       for (const entry of entries) {
-        if (protocolFilter !== "Both" && entry.protocol !== protocolFilter) {
+        if (protocolFilter !== "IPv4 + IPv6" && entry.protocol !== protocolFilter) {
           continue;
         }
 
         const key =
-          protocolFilter === "Both" ? `${target} (${entry.protocol})` : target;
+          protocolFilter === "IPv4 + IPv6" ? `${target} (${entry.protocol})` : target;
 
         let targetSeries = series.get(key);
         if (!targetSeries) {
