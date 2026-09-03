@@ -188,6 +188,18 @@
                 <section class="charts-section">
                     <div class="chart-container">
                         <!--<div class="instrument-label">Historical Latency (ms)</div>-->
+                        <div
+                            class="control-group"
+                            style="margin-bottom: 0.7rem"
+                        >
+                            <label>Address</label>
+                            <select
+                                id="latencyTargetFilter"
+                                aria-label="Latency target"
+                            >
+                                <option value="__all__">All</option>
+                            </select>
+                        </div>
                         <div class="chart-wrapper">
                             <canvas id="latencyChart"></canvas>
                         </div>

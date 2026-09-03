@@ -111,7 +111,7 @@ func bootstrap(configPath string) error {
 		defaultConfig := `---
 Schedule:
   Ping: 15 Minutes # Minutes or Hours
-  Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
+  Speedtest: OFF # Hours or OFF (official Ookla Speedtest CLI required)
   Archiving: 14 Days # Days or Months
   LogRotation: 7 Days # Days, Months or OFF
 
@@ -128,11 +128,32 @@ Addresses:
   Gateway:
     IPv4: 192.168.2.1
   Cloudflare DNS:
-    IPv6: 2606:4700:4700::1111
     IPv4: 1.1.1.1
-  Youtube:
-    Domain: youtube.com
-    Protocol: Both # IPv4, IPv6 or Both
+    IPv6: 2606:4700:4700::1111
+  Google DNS:
+    IPv4: 8.8.8.8
+    IPv6: 2001:4860:4860::8888
+  Sydney:
+    IPv4: 3.24.0.0
+    IPv6: 2406:da1c:16:9000::ec2
+  US West:
+    IPv4: 13.52.0.0
+    IPv6: 2600:1f1c:f64:3200::ec2
+  US East:
+    IPv4: 3.80.0.0
+    IPv6: 2600:1f18:2fe:900::ec2
+  Singapore:
+    IPv4: 3.0.0.9
+    IPv6: 2406:da18:ec6:6400::ec2
+  London:
+    IPv4: 3.8.0.0
+    IPv6: 2a05:d01c:810:8100::ec2
+  Tokyo:
+    IPv4: 3.112.0.0
+    IPv6: 2406:da14:295:300::ec2
+  # Google:
+  #   Domain: google.com
+  #   Protocol: Both # IPv4, IPv6 or Both
 `
 		if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
 			return fmt.Errorf("failed to create default config file %s: %w", configPath, err)

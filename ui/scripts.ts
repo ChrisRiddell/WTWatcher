@@ -7,9 +7,8 @@ import { DateTime } from "luxon";
 type Protocol = "IPv4" | "IPv6";
 type ProtocolFilter = Protocol | "IPv4 + IPv6";
 
-// Theme modes: user explicit preference ('light' | 'dark') or OS auto-detection ('system').
-type Theme = "light" | "dark" | "system";
-type ResolvedTheme = Exclude<Theme, "system">;
+// Theme modes supported by the dashboard. Dark mode is the default.
+type Theme = "light" | "dark";
 
 // UI visual view states.
 type ViewState = "loading" | "error" | "empty" | "content";
@@ -47,6 +46,8 @@ const DEFAULT_CHART_PALETTE = [
 
 const METRICS_URL = "metrics.json";
 const THEME_STORAGE_KEY = "theme";
+const DEFAULT_THEME: Theme = "dark";
+const ALL_LATENCY_TARGETS = "__all__" as const;
 
 // Speedtest bandwidth measurements in Mbps.
 interface SpeedtestEntry {
@@ -122,6 +123,7 @@ interface ChartRegistry {
 interface UIElements {
   dateFilter: HTMLSelectElement;
   protocolFilter: HTMLSelectElement;
+  latencyTargetFilter: HTMLSelectElement;
   themeToggle: HTMLButtonElement;
   status: HTMLElement;
   error: HTMLElement;
@@ -177,10 +179,6 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isProtocol(value: unknown): value is Protocol {
   return value === "IPv4" || value === "IPv6";
-}
-
-function isTheme(value: unknown): value is Theme {
-  return value === "light" || value === "dark" || value === "system";
 }
 
 // Validates numeric values and guarantees non-negative finite results.
@@ -299,6 +297,7 @@ function getElement<T extends HTMLElement>(id: string): T {
 const ui: UIElements = {
   dateFilter: getElement<HTMLSelectElement>("dateFilter"),
   protocolFilter: getElement<HTMLSelectElement>("protocolFilter"),
+  latencyTargetFilter: getElement<HTMLSelectElement>("latencyTargetFilter"),
   themeToggle: getElement<HTMLButtonElement>("themeToggle"),
 
   status: getElement<HTMLElement>("statusContainer"),
@@ -503,7 +502,8 @@ function computeLatencyStats(
 
   const latestEntries: LatencyStatEntry[] = rawLatestEntries
     .filter(
-      (entry) => protocolFilter === "IPv4 + IPv6" || entry.protocol === protocolFilter,
+      (entry) =>
+        protocolFilter === "IPv4 + IPv6" || entry.protocol === protocolFilter,
     )
     .map((entry) => {
       const protocolValues = targetHistory.get(entry.protocol) ?? [
@@ -703,7 +703,7 @@ function renderLatencyCard(
     const protocolLabel = createElement("span", {
       textContent: entry.protocol,
       styles: {
-        fontSize: "0.7rem",
+        fontSize: "0.9rem",
       },
     });
 
@@ -804,6 +804,7 @@ function destroyCharts(): void {
 function buildLatencySeries(
   data: ParsedDataPoint[],
   protocolFilter: ProtocolFilter,
+  targetFilter: string,
 ): Map<string, LatencySeries> {
   const series = new Map<string, LatencySeries>();
   const latencyData = data.filter((point) => point.latency);
@@ -812,13 +813,22 @@ function buildLatencySeries(
     if (!point.latency) return;
 
     for (const [target, entries] of Object.entries(point.latency)) {
+      if (targetFilter !== ALL_LATENCY_TARGETS && target !== targetFilter) {
+        continue;
+      }
+
       for (const entry of entries) {
-        if (protocolFilter !== "IPv4 + IPv6" && entry.protocol !== protocolFilter) {
+        if (
+          protocolFilter !== "IPv4 + IPv6" &&
+          entry.protocol !== protocolFilter
+        ) {
           continue;
         }
 
         const key =
-          protocolFilter === "IPv4 + IPv6" ? `${target} (${entry.protocol})` : target;
+          protocolFilter === "IPv4 + IPv6"
+            ? `${target} (${entry.protocol})`
+            : target;
 
         let targetSeries = series.get(key);
         if (!targetSeries) {
@@ -860,6 +870,7 @@ function toLatencySeriesEntries(
 function renderLatencyChart(
   data: ParsedDataPoint[],
   protocolFilter: ProtocolFilter,
+  targetFilter: string,
   text: string,
   grid: string,
   palette: string[],
@@ -868,7 +879,7 @@ function renderLatencyChart(
   const latencyData = data.filter((point) => point.latency);
   const labels = latencyData.map((point) => point.formattedTime);
   const targetEntries = toLatencySeriesEntries(
-    buildLatencySeries(data, protocolFilter),
+    buildLatencySeries(data, protocolFilter, targetFilter),
   );
   const latencyDatasets: ChartDataset<"line">[] = [];
 
@@ -1045,6 +1056,7 @@ function renderSpeedtestChart(data: ParsedDataPoint[], grid: string): void {
 function renderCharts(
   data: ParsedDataPoint[],
   protocolFilter: ProtocolFilter,
+  targetFilter: string,
 ): void {
   destroyCharts();
 
@@ -1055,7 +1067,7 @@ function renderCharts(
   Chart.defaults.borderColor = grid;
   Chart.defaults.font.family = "Inter";
 
-  renderLatencyChart(data, protocolFilter, text, grid, palette);
+  renderLatencyChart(data, protocolFilter, targetFilter, text, grid, palette);
   renderSpeedtestChart(data, grid);
 }
 
@@ -1079,6 +1091,44 @@ function populateFilters(): void {
   }
 }
 
+// Populates the latency target selector from the available addresses/targets.
+// The "All" option is always first and is the default when no previous selection exists.
+function populateLatencyTargetFilter(data: ParsedDataPoint[]): void {
+  const targets = new Set<string>();
+
+  for (const point of data) {
+    if (!point.latency) continue;
+
+    for (const target of Object.keys(point.latency)) {
+      targets.add(target);
+    }
+  }
+
+  const previousSelection = ui.latencyTargetFilter.value;
+  const fragment = document.createDocumentFragment();
+
+  const allOption = document.createElement("option");
+  allOption.value = ALL_LATENCY_TARGETS;
+  allOption.textContent = "All";
+  fragment.appendChild(allOption);
+
+  for (const target of Array.from(targets).sort((a, b) => a.localeCompare(b))) {
+    const option = document.createElement("option");
+    option.value = target;
+    option.textContent = target;
+    fragment.appendChild(option);
+  }
+
+  ui.latencyTargetFilter.replaceChildren(fragment);
+
+  const hasPreviousSelection =
+    previousSelection === ALL_LATENCY_TARGETS || targets.has(previousSelection);
+
+  ui.latencyTargetFilter.value = hasPreviousSelection
+    ? previousSelection
+    : ALL_LATENCY_TARGETS;
+}
+
 // Applies active date and protocol filters, updating telemetry cards, overview widgets, and charts.
 function applyFilters(): void {
   const data = getFilteredData();
@@ -1093,16 +1143,20 @@ function applyFilters(): void {
 
   const protocolFilter = ui.protocolFilter.value as ProtocolFilter;
 
+  populateLatencyTargetFilter(data);
+  const targetFilter = ui.latencyTargetFilter.value;
+
   setView("content");
   updateSpeedCard(data);
   updateLatencyCards(data, protocolFilter);
-  renderCharts(data, protocolFilter);
+  renderCharts(data, protocolFilter, targetFilter);
 }
 
 // Attaches event listeners to filter dropdowns.
 function initFilters(): void {
   ui.dateFilter.addEventListener("change", applyFilters);
   ui.protocolFilter.addEventListener("change", applyFilters);
+  ui.latencyTargetFilter.addEventListener("change", applyFilters);
 }
 
 // Fetches the live metrics.json dataset from the server and initialises the dashboard.
@@ -1138,33 +1192,20 @@ async function load(): Promise<void> {
 
 // --- Theme Management ---
 
-// Detects the OS color scheme preference.
-function getSystemTheme(): ResolvedTheme {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
-}
-
-// Reads saved theme from localStorage, defaulting to 'system' if absent or unavailable.
+// Reads the saved light/dark theme preference, defaulting to dark.
 function getStoredTheme(): Theme {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
-    return isTheme(stored) ? stored : "system";
+    return stored === "light" || stored === "dark" ? stored : DEFAULT_THEME;
   } catch {
     // Storage may be unavailable due to privacy settings or browser policy.
-    return "system";
+    return DEFAULT_THEME;
   }
 }
 
-// Resolves effective theme ('light' or 'dark'), taking OS preference into account if 'system'.
-function getEffectiveTheme(): ResolvedTheme {
-  const stored = getStoredTheme();
-  return stored === "system" ? getSystemTheme() : stored;
-}
-
 // Updates theme toggle icon and accessibility attributes.
-function updateThemeToggleUI(effectiveTheme: ResolvedTheme): void {
-  const isLight = effectiveTheme === "light";
+function updateThemeToggleUI(theme: Theme): void {
+  const isLight = theme === "light";
   const labelText = isLight ? "Switch to dark theme" : "Switch to light theme";
 
   ui.themeToggle.setAttribute("aria-label", labelText);
@@ -1178,14 +1219,10 @@ function updateThemeToggleUI(effectiveTheme: ResolvedTheme): void {
     ?.classList.toggle("hidden", isLight);
 }
 
-// Persists theme preference to localStorage.
+// Persists the explicit light/dark theme preference to localStorage.
 function setStoredTheme(theme: Theme): void {
   try {
-    if (theme === "system") {
-      localStorage.removeItem(THEME_STORAGE_KEY);
-    } else {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
-    }
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
   } catch {
     // Theme rendering still works when persistent storage is unavailable.
   }
@@ -1196,37 +1233,35 @@ function applyTheme(theme: Theme): void {
   styleCache = null; // Invalidate cached CSS variables.
   setStoredTheme(theme);
 
-  const effectiveTheme = theme === "system" ? getSystemTheme() : theme;
-  document.documentElement.setAttribute("data-theme", effectiveTheme);
-  updateThemeToggleUI(effectiveTheme);
+  document.documentElement.setAttribute("data-theme", theme);
+  updateThemeToggleUI(theme);
 
   if (rawData.length > 0) {
     const data = getFilteredData();
     if (data.length > 0) {
-      renderCharts(data, ui.protocolFilter.value as ProtocolFilter);
+      renderCharts(
+        data,
+        ui.protocolFilter.value as ProtocolFilter,
+        ui.latencyTargetFilter.value,
+      );
     }
   }
 }
 
-// Toggles between light and dark themes.
+// Toggles between the explicit light and dark themes.
 function toggleTheme(): void {
-  const current = getEffectiveTheme();
+  const current = getStoredTheme();
   const next: Theme = current === "dark" ? "light" : "dark";
   applyTheme(next);
 }
 
-// Initializes theme state and registers listeners for OS theme changes and user toggles.
+// Initializes theme state using the saved preference, with dark as the default.
+// No operating-system color-scheme detection is performed.
 function initTheme(): void {
-  const effectiveTheme = getEffectiveTheme();
-  document.documentElement.setAttribute("data-theme", effectiveTheme);
-  updateThemeToggleUI(effectiveTheme);
+  const theme = getStoredTheme();
 
-  const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-  mediaQuery.addEventListener("change", () => {
-    if (getStoredTheme() === "system") {
-      applyTheme("system");
-    }
-  });
+  document.documentElement.setAttribute("data-theme", theme);
+  updateThemeToggleUI(theme);
 
   ui.themeToggle.addEventListener("click", toggleTheme);
 }
