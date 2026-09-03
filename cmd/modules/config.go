@@ -15,8 +15,9 @@ import (
 
 // rawConfig represents the unvalidated, raw structure decoded directly from config.yml.
 type rawConfig struct {
-	Schedule rawSchedule `yaml:"Schedule"`
-	Ping     rawPing     `yaml:"Ping"`
+	Schedule  rawSchedule        `yaml:"Schedule"`
+	Ping      rawPing            `yaml:"Ping"`
+	Speedtest rawSpeedtestConfig `yaml:"Speedtest"`
 	// Addresses is intentionally unmarshaled as a yaml.Node AST instead of a Go map.
 	// In Go, map iteration order is randomized by design; using yaml.Node allows us
 	// to iterate over the YAML MappingNode entries in the exact order the user authored them.
@@ -31,16 +32,17 @@ type rawSchedule struct {
 	LogRotation string `yaml:"LogRotation"`
 }
 
+// rawSpeedtestConfig holds unparsed Speedtest parameters from config.yml.
+type rawSpeedtestConfig struct {
+	ServerID yaml.Node `yaml:"ServerID"`
+}
+
 // rawPing holds unparsed ping probe parameters and the anomaly threshold.
 type rawPing struct {
-	Count                  int    `yaml:"Count"`
-	PingCount              int    `yaml:"PingCount"`
-	Timeout                string `yaml:"Timeout"`
-	PingTimeout            string `yaml:"PingTimeout"`
-	Retries                *int   `yaml:"Retries"`
-	PingRetries            *int   `yaml:"PingRetries"`
-	AnomalyThresholdMs     int64  `yaml:"AnomalyThresholdMs"`
-	PingAnomalyThresholdMs int64  `yaml:"PingAnomalyThresholdMs"`
+	Count              int    `yaml:"Count"`
+	Timeout            string `yaml:"Timeout"`
+	Retries            *int   `yaml:"Retries"`
+	AnomalyThresholdMs int64  `yaml:"AnomalyThresholdMs"`
 }
 
 // rawAddress holds string values for an individual target under the Addresses section.
@@ -57,6 +59,7 @@ type rawAddress struct {
 type Config struct {
 	Schedule  Schedule
 	Ping      Ping
+	Speedtest Speedtest
 	Addresses []Address
 }
 
@@ -73,10 +76,21 @@ type Ping struct {
 	Count          int
 	TimeoutSeconds int64
 	Retries        int
-	// PingAnomalyThresholdMs is the upper bound for realistic per-packet RTT in milliseconds.
+	// AnomalyThresholdMs is the upper bound for realistic per-packet RTT in milliseconds.
 	// Any sample above Q3 + 1.5×IQR that also exceeds this ceiling is treated as an OS/scheduler
 	// spike (e.g. CPU contention, sleep/wake, GC stall) and marked as an anomaly. Default is 2000ms.
-	PingAnomalyThresholdMs int64
+	AnomalyThresholdMs int64
+}
+
+// Speedtest holds validated configuration parameters for Ookla Speedtest CLI.
+type Speedtest struct {
+	// ServerID is the target Ookla speedtest server identifier, or "AUTO" for automatic selection.
+	ServerID string
+}
+
+// IsAuto returns true if the server selection is set to automatic.
+func (s Speedtest) IsAuto() bool {
+	return s.ServerID == "" || strings.EqualFold(s.ServerID, "auto")
 }
 
 // Address represents a validated monitoring target with typed IP addresses or domain name.
@@ -117,12 +131,17 @@ func ParseConfig(data []byte) (*Config, error) {
 		return nil, err
 	}
 
+	speedtest, err := parseSpeedtest(raw.Speedtest)
+	if err != nil {
+		return nil, err
+	}
+
 	addrs, err := parseAddresses(&raw.Addresses)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Config{Schedule: sched, Ping: ping, Addresses: addrs}, nil
+	return &Config{Schedule: sched, Ping: ping, Speedtest: speedtest, Addresses: addrs}, nil
 }
 
 // ─── internal helpers ──────────────────────────────────────────────────────
@@ -156,54 +175,59 @@ func parseSchedule(r rawSchedule) (Schedule, error) {
 
 // parsePing validates probe parameters and anomaly filtering thresholds.
 func parsePing(r rawPing) (Ping, error) {
-	count := r.PingCount
-	if count == 0 {
-		count = r.Count
-	}
-	if count <= 0 {
-		return Ping{}, fmt.Errorf("Ping.PingCount: must be a positive number of packets (e.g. 4)")
+	if r.Count <= 0 {
+		return Ping{}, fmt.Errorf("Ping.Count: must be a positive number of packets (e.g. 4)")
 	}
 
-	timeoutStr := r.PingTimeout
-	if timeoutStr == "" {
-		timeoutStr = r.Timeout
+	if r.Timeout == "" {
+		return Ping{}, fmt.Errorf("Ping.Timeout: duration string is required (e.g. \"10 Seconds\")")
 	}
-	if timeoutStr == "" {
-		return Ping{}, fmt.Errorf("Ping.PingTimeout: duration string is required (e.g. \"10 Seconds\")")
-	}
-	timeoutSec, err := parseInterval(timeoutStr, "Ping.PingTimeout")
+	timeoutSec, err := parseInterval(r.Timeout, "Ping.Timeout")
 	if err != nil {
 		return Ping{}, err
 	}
 	if timeoutSec <= 0 {
-		return Ping{}, fmt.Errorf("Ping.PingTimeout: must be a positive duration (e.g. \"10 Seconds\")")
+		return Ping{}, fmt.Errorf("Ping.Timeout: must be a positive duration (e.g. \"10 Seconds\")")
 	}
 
-	retriesPtr := r.PingRetries
-	if retriesPtr == nil {
-		retriesPtr = r.Retries
+	if r.Retries == nil {
+		return Ping{}, fmt.Errorf("Ping.Retries: must be specified (e.g. 2, or 0 to disable retries)")
 	}
-	if retriesPtr == nil {
-		return Ping{}, fmt.Errorf("Ping.PingRetries: must be specified (e.g. 2, or 0 to disable retries)")
-	}
-	if *retriesPtr < 0 {
-		return Ping{}, fmt.Errorf("Ping.PingRetries: must be a non-negative integer (e.g. 2)")
+	if *r.Retries < 0 {
+		return Ping{}, fmt.Errorf("Ping.Retries: must be a non-negative integer (e.g. 2)")
 	}
 
-	anomalyThresholdMs := r.PingAnomalyThresholdMs
-	if anomalyThresholdMs == 0 {
-		anomalyThresholdMs = r.AnomalyThresholdMs
-	}
-	if anomalyThresholdMs <= 0 {
-		return Ping{}, fmt.Errorf("Ping.PingAnomalyThresholdMs: must be a positive number of milliseconds (e.g. 2000)")
+	if r.AnomalyThresholdMs <= 0 {
+		return Ping{}, fmt.Errorf("Ping.AnomalyThresholdMs: must be a positive number of milliseconds (e.g. 2000)")
 	}
 
 	return Ping{
-		Count:                  count,
-		TimeoutSeconds:         timeoutSec,
-		Retries:                *retriesPtr,
-		PingAnomalyThresholdMs: anomalyThresholdMs,
+		Count:              r.Count,
+		TimeoutSeconds:     timeoutSec,
+		Retries:            *r.Retries,
+		AnomalyThresholdMs: r.AnomalyThresholdMs,
 	}, nil
+}
+
+// parseSpeedtest validates Ookla Speedtest configuration settings.
+func parseSpeedtest(r rawSpeedtestConfig) (Speedtest, error) {
+	if r.ServerID.Kind != 0 && r.ServerID.Kind != yaml.ScalarNode {
+		return Speedtest{}, fmt.Errorf("Speedtest.ServerID: must be a scalar value (e.g. AUTO or a numeric server ID)")
+	}
+
+	val := strings.TrimSpace(r.ServerID.Value)
+	if val == "" || strings.EqualFold(val, "auto") {
+		return Speedtest{ServerID: "AUTO"}, nil
+	}
+
+	// Ookla server IDs are positive numeric identifiers.
+	// Validate to ensure proper configuration and prevent arbitrary argument injection.
+	id, err := strconv.ParseUint(val, 10, 64)
+	if err != nil || id == 0 {
+		return Speedtest{}, fmt.Errorf("Speedtest.ServerID: invalid server ID %q (expected a positive integer or \"AUTO\")", val)
+	}
+
+	return Speedtest{ServerID: val}, nil
 }
 
 // parseInterval parses human-friendly duration strings like "10 Seconds", "15 Minutes", "3 Hours", "14 Days"

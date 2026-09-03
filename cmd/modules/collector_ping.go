@@ -218,7 +218,7 @@ func runPinger(ctx context.Context, host, network, proto string, privileged bool
 	// We apply Tukey's Interquartile Range (IQR) fence to per-packet RTTs.
 	// If outliers exceeding anomalyThresholdMs are detected, replace the average
 	// with the clean sample average, retain the unfiltered raw average, and flag IsAnomaly.
-	filtered := filterAnomalyRTTs(stats.Rtts, pingCfg.PingAnomalyThresholdMs)
+	filtered := filterAnomalyRTTs(stats.Rtts, pingCfg.AnomalyThresholdMs)
 	if filtered != nil {
 		var sum float64
 		for _, rtt := range filtered {

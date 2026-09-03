@@ -13,10 +13,13 @@ Schedule:
     LogRotation: 14 Days
 
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
+
+Speedtest:
+    ServerID: AUTO
 
 Addresses:
     Gateway:
@@ -52,8 +55,11 @@ Addresses:
 	if cfg.Ping.Retries != 2 {
 		t.Errorf("ping retries: want 2, got %d", cfg.Ping.Retries)
 	}
-	if cfg.Ping.PingAnomalyThresholdMs != 2000 {
-		t.Errorf("ping anomaly threshold: want 2000, got %d", cfg.Ping.PingAnomalyThresholdMs)
+	if cfg.Ping.AnomalyThresholdMs != 2000 {
+		t.Errorf("ping anomaly threshold: want 2000, got %d", cfg.Ping.AnomalyThresholdMs)
+	}
+	if cfg.Speedtest.ServerID != "AUTO" {
+		t.Errorf("speedtest server id: want AUTO, got %q", cfg.Speedtest.ServerID)
 	}
 	if len(cfg.Addresses) != 3 {
 		t.Errorf("addresses: want 3, got %d", len(cfg.Addresses))
@@ -68,10 +74,10 @@ Schedule:
     Archiving: 14 Days
     LogRotation: 14 Days
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Bad:
         IPv4: not-an-ip
@@ -90,10 +96,10 @@ Schedule:
     Archiving: 14 Days
     LogRotation: 14 Days
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Site:
         Domain: example.com
@@ -113,10 +119,10 @@ Schedule:
     Archiving: 14 Days
     LogRotation: 14 Days
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses: {}
 `
 	_, err := ParseConfig([]byte(yaml))
@@ -133,10 +139,10 @@ Schedule:
     Archiving: 1 Days
     LogRotation: 14 Days
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Bad:
         Domain: not a domain
@@ -155,10 +161,10 @@ Schedule:
     Archiving: 7 Days
     LogRotation: 14 Days
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     CloudflareDNS:
         IPv6: 2606:4700:4700::1111
@@ -187,10 +193,10 @@ Schedule:
     Archiving: 7 Days
     LogRotation: 14 Days
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Empty: {}
 `
@@ -208,10 +214,10 @@ Schedule:
     Archiving: 14 Days
     LogRotation: OFF
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Local:
         IPv4: 127.0.0.1
@@ -240,10 +246,10 @@ Schedule:
     LogRotation: 14 Days
 
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 
 Addresses:
     Gateway:
@@ -292,113 +298,113 @@ Addresses:
 			wantErr:   true,
 		},
 		{
-			name: "missing PingCount",
+			name: "missing Count",
 			pingBlock: `
 Ping:
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "zero PingCount",
+			name: "zero Count",
 			pingBlock: `
 Ping:
-    PingCount: 0
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 0
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "negative PingCount",
+			name: "negative Count",
 			pingBlock: `
 Ping:
-    PingCount: -1
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: -1
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "missing PingTimeout",
+			name: "missing Timeout",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Retries: 2
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "invalid PingTimeout unit",
+			name: "invalid Timeout unit",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Years
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Years
+    Retries: 2
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "missing PingRetries",
+			name: "missing Retries",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "negative PingRetries",
+			name: "negative Retries",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: -1
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: -1
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: true,
 		},
 		{
-			name: "zero PingRetries is valid",
+			name: "zero Retries is valid",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 0
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 0
+    AnomalyThresholdMs: 2000
 `,
 			wantErr: false,
 		},
 		{
-			name: "missing PingAnomalyThresholdMs",
+			name: "missing AnomalyThresholdMs",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
 `,
 			wantErr: true,
 		},
 		{
-			name: "zero PingAnomalyThresholdMs",
+			name: "zero AnomalyThresholdMs",
 			pingBlock: `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 0
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 0
 `,
 			wantErr: true,
 		},
 		{
-			name: "alias field names (Count, Timeout, Retries, AnomalyThresholdMs)",
+			name: "primary field names (Count, Timeout, Retries, AnomalyThresholdMs)",
 			pingBlock: `
 Ping:
     Count: 5
@@ -420,7 +426,7 @@ Ping:
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if !tc.wantErr && tc.name == "alias field names (Count, Timeout, Retries, AnomalyThresholdMs)" {
+			if !tc.wantErr && tc.name == "primary field names (Count, Timeout, Retries, AnomalyThresholdMs)" {
 				if cfg.Ping.Count != 5 {
 					t.Errorf("Count: want 5, got %d", cfg.Ping.Count)
 				}
@@ -430,8 +436,8 @@ Ping:
 				if cfg.Ping.Retries != 3 {
 					t.Errorf("Retries: want 3, got %d", cfg.Ping.Retries)
 				}
-				if cfg.Ping.PingAnomalyThresholdMs != 3000 {
-					t.Errorf("PingAnomalyThresholdMs: want 3000, got %d", cfg.Ping.PingAnomalyThresholdMs)
+				if cfg.Ping.AnomalyThresholdMs != 3000 {
+					t.Errorf("AnomalyThresholdMs: want 3000, got %d", cfg.Ping.AnomalyThresholdMs)
 				}
 			}
 		})
@@ -441,10 +447,10 @@ Ping:
 func TestParseConfig_LogRotationValidation(t *testing.T) {
 	base := `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Local:
         IPv4: 127.0.0.1
@@ -594,10 +600,10 @@ Schedule:
 func TestParseConfig_ArchivingValidation(t *testing.T) {
 	base := `
 Ping:
-    PingCount: 4
-    PingTimeout: 10 Seconds
-    PingRetries: 2
-    PingAnomalyThresholdMs: 2000
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
 Addresses:
     Local:
         IPv4: 127.0.0.1
@@ -758,6 +764,131 @@ Schedule:
 				}
 				if cfg.Schedule.ArchivingSeconds != tc.wantSec {
 					t.Errorf("ArchivingSeconds: want %d, got %d", tc.wantSec, cfg.Schedule.ArchivingSeconds)
+				}
+			}
+		})
+	}
+}
+
+func TestParseConfig_SpeedtestValidation(t *testing.T) {
+	// baseValid provides a complete, valid config minus the Speedtest block so each
+	// sub-test can inject its own Speedtest section.
+	baseValid := `
+Schedule:
+    Ping: 5 Minutes
+    Speedtest: OFF
+    Archiving: 7 Days
+    LogRotation: 14 Days
+Ping:
+    Count: 4
+    Timeout: 10 Seconds
+    Retries: 2
+    AnomalyThresholdMs: 2000
+Addresses:
+    Local:
+        IPv4: 127.0.0.1
+`
+
+	tests := []struct {
+		name           string
+		speedtestBlock string
+		wantErr        bool
+		wantServerID   string
+	}{
+		{
+			name: "AUTO is accepted and normalised to AUTO",
+			speedtestBlock: `
+Speedtest:
+    ServerID: AUTO
+`,
+			wantErr:      false,
+			wantServerID: "AUTO",
+		},
+		{
+			name: "lowercase auto is accepted and normalised to AUTO",
+			speedtestBlock: `
+Speedtest:
+    ServerID: auto
+`,
+			wantErr:      false,
+			wantServerID: "AUTO",
+		},
+		{
+			name: "mixed-case Auto is accepted and normalised to AUTO",
+			speedtestBlock: `
+Speedtest:
+    ServerID: Auto
+`,
+			wantErr:      false,
+			wantServerID: "AUTO",
+		},
+		{
+			name:           "missing Speedtest section defaults to AUTO",
+			speedtestBlock: "",
+			wantErr:        false,
+			wantServerID:   "AUTO",
+		},
+		{
+			name: "valid numeric server ID is accepted",
+			speedtestBlock: `
+Speedtest:
+    ServerID: 12345
+`,
+			wantErr:      false,
+			wantServerID: "12345",
+		},
+		{
+			name: "quoted numeric server ID is accepted",
+			speedtestBlock: `
+Speedtest:
+    ServerID: "54321"
+`,
+			wantErr:      false,
+			wantServerID: "54321",
+		},
+		{
+			name: "non-numeric server ID is rejected",
+			speedtestBlock: `
+Speedtest:
+    ServerID: london-1
+`,
+			wantErr: true,
+		},
+		{
+			name: "zero server ID is rejected",
+			speedtestBlock: `
+Speedtest:
+    ServerID: 0
+`,
+			wantErr: true,
+		},
+		{
+			name: "negative server ID is rejected",
+			speedtestBlock: `
+Speedtest:
+    ServerID: -1
+`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := baseValid + tc.speedtestBlock
+			cfg, err := ParseConfig([]byte(raw))
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !tc.wantErr && cfg.Speedtest.ServerID != tc.wantServerID {
+				t.Errorf("ServerID: want %q, got %q", tc.wantServerID, cfg.Speedtest.ServerID)
+			}
+			if !tc.wantErr && tc.wantServerID != "AUTO" {
+				// Numeric IDs must not activate auto selection.
+				if cfg.Speedtest.IsAuto() {
+					t.Errorf("IsAuto() should be false for numeric ServerID %q", tc.wantServerID)
 				}
 			}
 		})

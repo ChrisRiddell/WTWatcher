@@ -94,7 +94,7 @@ func (s *Scheduler) Start() {
 	})
 
 	addTask("speedtest", s.cfg.Schedule.SpeedtestSeconds, func(ctx context.Context) {
-		RunSpeedtest(ctx, s.fm, s.logger, time.Now().UTC())
+		RunSpeedtest(ctx, s.cfg.Speedtest, s.fm, s.logger, time.Now().UTC())
 	})
 
 	addTask("archive", s.cfg.Schedule.ArchivingSeconds, func(ctx context.Context) {

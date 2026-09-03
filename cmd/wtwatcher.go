@@ -110,26 +110,29 @@ func bootstrap(configPath string) error {
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		defaultConfig := `---
 Schedule:
-    Ping: 5 Minutes # Minutes or Hours
-    Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
-    Archiving: 14 Days # Days or Months
-    LogRotation: 14 Days # Days, Months or OFF
+  Ping: 15 Minutes # Minutes or Hours
+  Speedtest: OFF # Minutes, Hours or OFF (official Ookla Speedtest CLI required)
+  Archiving: 14 Days # Days or Months
+  LogRotation: 7 Days # Days, Months or OFF
 
 Ping:
-    PingCount: 4 # Number of ICMP packets sent per probe cycle.
-    PingTimeout: 10 Seconds # Overall timeout for completing a probe.
-    PingRetries: 2 # Max retry attempts on probe failure before giving up.
-    PingAnomalyThresholdMs: 2000 # Max realistic ping (ms). Spikes above this are filtered as anomalies.
+  Count: 4 # Number of ICMP packets sent per probe cycle.
+  Timeout: 10 Seconds # Overall timeout for completing a probe.
+  Retries: 2 # Max retry attempts on probe failure before giving up.
+  AnomalyThresholdMs: 2000 # Max realistic ping (ms). Spikes above this are filtered as anomalies.
+
+Speedtest:
+  ServerID: AUTO #Specify a server from the server list using its id (Speedtest --servers), AUTO for default
 
 Addresses:
-    Gateway:
-        IPv4: 192.168.1.1
-    Cloudflare DNS:
-        IPv6: 2606:4700:4700::1111
-        IPv4: 1.1.1.1
-    Youtube:
-        Domain: youtube.com
-        Protocol: Both # IPv4, IPv6 or Both
+  Gateway:
+    IPv4: 192.168.2.1
+  Cloudflare DNS:
+    IPv6: 2606:4700:4700::1111
+    IPv4: 1.1.1.1
+  Youtube:
+    Domain: youtube.com
+    Protocol: Both # IPv4, IPv6 or Both
 `
 		if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
 			return fmt.Errorf("failed to create default config file %s: %w", configPath, err)

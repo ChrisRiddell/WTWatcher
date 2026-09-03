@@ -50,3 +50,56 @@ func TestBpsToMbps(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSpeedtestArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		serverID string
+		wantArgs []string
+	}{
+		{
+			name:     "AUTO produces default args without --server-id",
+			serverID: "AUTO",
+			wantArgs: []string{"--accept-license", "--accept-gdpr", "--format=json"},
+		},
+		{
+			name:     "lowercase auto produces default args without --server-id",
+			serverID: "auto",
+			wantArgs: []string{"--accept-license", "--accept-gdpr", "--format=json"},
+		},
+		{
+			name:     "empty serverID produces default args without --server-id",
+			serverID: "",
+			wantArgs: []string{"--accept-license", "--accept-gdpr", "--format=json"},
+		},
+		{
+			name:     "whitespace-only serverID produces default args without --server-id",
+			serverID: "   ",
+			wantArgs: []string{"--accept-license", "--accept-gdpr", "--format=json"},
+		},
+		{
+			name:     "numeric serverID adds --server-id flag",
+			serverID: "12345",
+			wantArgs: []string{"--accept-license", "--accept-gdpr", "--format=json", "--server-id", "12345"},
+		},
+		{
+			name:     "serverID with surrounding whitespace is trimmed",
+			serverID: "  54321  ",
+			wantArgs: []string{"--accept-license", "--accept-gdpr", "--format=json", "--server-id", "54321"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildSpeedtestArgs(tc.serverID)
+			if len(got) != len(tc.wantArgs) {
+				t.Fatalf("buildSpeedtestArgs(%q): got %v, want %v", tc.serverID, got, tc.wantArgs)
+			}
+			for i := range got {
+				if got[i] != tc.wantArgs[i] {
+					t.Errorf("buildSpeedtestArgs(%q)[%d]: got %q, want %q", tc.serverID, i, got[i], tc.wantArgs[i])
+				}
+			}
+		})
+	}
+}

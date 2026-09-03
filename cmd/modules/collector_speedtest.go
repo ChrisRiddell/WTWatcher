@@ -22,13 +22,13 @@ type rawSpeedtest struct {
 
 // RunSpeedtest executes the speedtest CLI subprocess, parses the measurement output,
 // logs throughput statistics, and persists the entry into the metrics data store.
-func RunSpeedtest(ctx context.Context, fm *FileManager, logger *Logger, ts time.Time) {
+func RunSpeedtest(ctx context.Context, speedtestCfg Speedtest, fm *FileManager, logger *Logger, ts time.Time) {
 	if ctx.Err() != nil {
 		logger.Warn("speedtest run cancelled", "error", ctx.Err())
 		return
 	}
 	fmt.Printf("[speedtest] starting speedtest run at %s\n", formatConsoleTime(ts))
-	entry, err := execSpeedtest(ctx)
+	entry, err := execSpeedtest(ctx, speedtestCfg.ServerID)
 	if err != nil {
 		logger.Error("speedtest failed", "error", err)
 		fmt.Printf("[speedtest] FAILED: %v\n", err)
@@ -46,16 +46,26 @@ func RunSpeedtest(ctx context.Context, fm *FileManager, logger *Logger, ts time.
 	fmt.Println("[speedtest] run complete")
 }
 
-// execSpeedtest wraps the external Ookla CLI invocation. Storing it in a function variable
-// allows unit tests to stub/mock execution without requiring the real speedtest binary installed.
-var execSpeedtest = func(ctx context.Context) (SpeedtestEntry, error) {
-	cmd := exec.CommandContext(
-		ctx,
-		"speedtest",
+// buildSpeedtestArgs constructs the argument list for invoking the Ookla speedtest CLI.
+// When serverID is non-empty and not set to "AUTO" (case-insensitive), it appends "--server-id" and the ID.
+func buildSpeedtestArgs(serverID string) []string {
+	args := []string{
 		"--accept-license",
 		"--accept-gdpr",
 		"--format=json",
-	)
+	}
+	trimmed := strings.TrimSpace(serverID)
+	if trimmed != "" && !strings.EqualFold(trimmed, "auto") {
+		args = append(args, "--server-id", trimmed)
+	}
+	return args
+}
+
+// execSpeedtest wraps the external Ookla CLI invocation. Storing it in a function variable
+// allows unit tests to stub/mock execution without requiring the real speedtest binary installed.
+var execSpeedtest = func(ctx context.Context, serverID string) (SpeedtestEntry, error) {
+	args := buildSpeedtestArgs(serverID)
+	cmd := exec.CommandContext(ctx, "speedtest", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		// If command failed with an exit error, extract stderr output to provide a descriptive error message.
