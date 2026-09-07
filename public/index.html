@@ -1,15 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
         <title>WTWatcher | Network Monitor</title>
+
+        <!-- External font connections -->
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
-            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono:wght@700&display=swap"
             rel="stylesheet"
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono:wght@700&display=swap"
         />
+
+        <!-- ES module dependencies -->
         <script type="importmap">
             {
                 "imports": {
@@ -18,9 +23,11 @@
                 }
             }
         </script>
+
         <link rel="stylesheet" href="styles.css" />
-        <script type="module" src="scripts.js" defer></script>
+        <script type="module" src="scripts.js"></script>
     </head>
+
     <body>
         <div class="dashboard-container">
             <!-- Header -->
@@ -29,23 +36,30 @@
                     <h1>Network Monitor</h1>
                     <p>IT REALLY SLAPS THE ALPACA'S RUMP!</p>
                 </div>
+
                 <div class="controls">
                     <div class="control-group">
-                        <label>Protocol</label>
+                        <label for="protocolFilter">Protocol</label>
                         <select id="protocolFilter">
-                            <option value="IPv4 + IPv6">IPv4 + IPv6</option>
+                            <option value="IPv4 + IPv6" selected>
+                                IPv4 + IPv6
+                            </option>
                             <option value="IPv4">IPv4</option>
                             <option value="IPv6">IPv6</option>
                         </select>
                     </div>
+
                     <div class="control-group">
-                        <label>Date</label>
+                        <label for="dateFilter">Date</label>
                         <select id="dateFilter">
-                            <option disabled selected>Loading...</option>
+                            <option value="" disabled selected>
+                                Loading...
+                            </option>
                         </select>
                     </div>
+
                     <div class="control-group">
-                        <label>Theme</label>
+                        <label for="themeToggle">Theme</label>
                         <button
                             id="themeToggle"
                             class="theme-toggle-btn"
@@ -63,30 +77,40 @@
                                 stroke-width="2"
                                 stroke-linecap="round"
                                 stroke-linejoin="round"
+                                aria-hidden="true"
+                                focusable="false"
                             >
                                 <circle cx="12" cy="12" r="5"></circle>
+
                                 <line x1="12" y1="1" x2="12" y2="3"></line>
+
                                 <line x1="12" y1="21" x2="12" y2="23"></line>
+
                                 <line
                                     x1="4.22"
                                     y1="4.22"
                                     x2="5.64"
                                     y2="5.64"
                                 ></line>
+
                                 <line
                                     x1="18.36"
                                     y1="18.36"
                                     x2="19.78"
                                     y2="19.78"
                                 ></line>
+
                                 <line x1="1" y1="12" x2="3" y2="12"></line>
+
                                 <line x1="21" y1="12" x2="23" y2="12"></line>
+
                                 <line
                                     x1="4.22"
                                     y1="19.78"
                                     x2="5.64"
                                     y2="18.36"
                                 ></line>
+
                                 <line
                                     x1="18.36"
                                     y1="5.64"
@@ -94,6 +118,7 @@
                                     y2="4.22"
                                 ></line>
                             </svg>
+
                             <svg
                                 class="theme-icon moon-icon"
                                 width="16"
@@ -104,6 +129,8 @@
                                 stroke-width="2"
                                 stroke-linecap="round"
                                 stroke-linejoin="round"
+                                aria-hidden="true"
+                                focusable="false"
                             >
                                 <path
                                     d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"
@@ -114,119 +141,169 @@
                 </div>
             </header>
 
-            <!-- Error/Loading/Empty States -->
-            <div id="statusContainer" class="hidden">
+            <!-- Status -->
+            <div
+                id="statusContainer"
+                class="hidden"
+                role="status"
+                aria-live="polite"
+            >
                 <div
                     id="errorAlert"
-                    class="status-msg hidden"
-                    style="
-                        background: rgba(255, 0, 0, 0.2);
-                        border: 1px solid red;
-                    "
+                    class="status-msg status-msg-error hidden"
+                    role="alert"
                 >
                     Failed to load monitoring data.
                 </div>
-                <div
-                    id="emptyAlert"
-                    class="status-msg hidden"
-                    style="
-                        background: rgba(0, 255, 255, 0.1);
-                        border: 1px solid cyan;
-                    "
-                >
+
+                <div id="emptyAlert" class="status-msg status-msg-empty hidden">
                     No data available for selected filters.
                 </div>
-                <div id="loadingSkeleton" class="status-msg hidden">
+
+                <div
+                    id="loadingSkeleton"
+                    class="status-msg status-msg-loading hidden"
+                >
                     Loading system metrics...
                 </div>
             </div>
 
             <!-- Main Content -->
             <main id="mainContent">
-                <!-- Instrument Grid -->
-                <section id="latencyCardsContainer" class="metrics-grid">
-                    <!-- Dynamically populated instrument boxes -->
+                <!-- Current Metrics -->
+                <section
+                    id="latencyCardsContainer"
+                    class="metrics-grid"
+                    aria-label="Current network metrics"
+                >
+                    <!-- Latency cards are populated by JavaScript. -->
 
-                    <!-- Placeholder for Speedtest (rendered by JS) -->
+                    <!-- Speedtest card is repositioned by JavaScript. -->
                     <div id="speedtestCard" class="instrument-box hidden">
                         <div class="instrument-label">
-                            <span>SPEEDTEST.NET</span>
-                            <div class="speed-indicators">
-                                <span
-                                    class="indicator"
-                                    style="color: var(--neon-blue)"
-                                    >↓ DL</span
-                                >
-                                <span
-                                    class="indicator"
-                                    style="color: var(--neon-orange)"
-                                    >↑ UL</span
-                                >
+                            <span>Speedtest.net</span>
+
+                            <div
+                                class="speed-indicators"
+                                aria-label="Speedtest metrics"
+                            >
+                                <span class="indicator indicator-download">
+                                    ↓ DL
+                                </span>
+
+                                <span class="indicator indicator-upload">
+                                    ↑ UL
+                                </span>
                             </div>
                         </div>
+
                         <div class="speed-values">
                             <span
                                 id="latestDownload"
                                 class="instrument-value speed-dl"
-                                >--</span
                             >
-                            <span class="instrument-value speed-slash">/</span>
+                                --
+                            </span>
+
+                            <span
+                                class="instrument-value speed-slash"
+                                aria-hidden="true"
+                            >
+                                /
+                            </span>
+
                             <span
                                 id="latestUpload"
                                 class="instrument-value speed-ul"
-                                >--</span
                             >
-                            <span class="instrument-unit">Mbps</span>
+                                --
+                            </span>
+
+                            <span class="instrument-unit"> Mbps </span>
                         </div>
-                        <div class="instrument-footer" id="speedtestTime">
-                            CURRENT SPEED
+
+                        <div id="speedtestTime" class="instrument-footer">
+                            Current Speed
                         </div>
                     </div>
                 </section>
 
-                <!-- Charts Section -->
-                <section class="charts-section">
-                    <div class="chart-container">
-                        <!--<div class="instrument-label">Historical Latency (ms)</div>-->
+                <!-- Historical Charts -->
+                <section
+                    class="charts-section"
+                    aria-label="Historical network metrics"
+                >
+                    <!-- Latency Chart -->
+                    <section
+                        class="chart-container"
+                        aria-label="Historical latency"
+                    >
                         <div class="chart-controls">
                             <div class="control-group">
-                                <label for="latencyTargetFilter">Address</label>
+                                <label for="latencyTargetFilter">
+                                    Address
+                                </label>
+
                                 <select
                                     id="latencyTargetFilter"
                                     aria-label="Latency target"
                                 >
-                                    <option value="__all__">All</option>
+                                    <option value="__all__" selected>
+                                        All
+                                    </option>
                                 </select>
                             </div>
-                            <div class="control-group" id="latencyTimeControlGroup">
-                                <label for="latencyTimeFilter">Time</label>
+
+                            <div
+                                id="latencyTimeControlGroup"
+                                class="control-group"
+                            >
+                                <label for="latencyTimeFilter"> Time </label>
+
                                 <select
                                     id="latencyTimeFilter"
                                     aria-label="Latency time window"
                                 >
-                                    <option value="today" selected>Today</option>
+                                    <option value="today" selected>
+                                        Today
+                                    </option>
+
                                     <option value="1h">Last 1 Hour</option>
+
                                     <option value="5h">Last 5 Hours</option>
+
                                     <option value="12h">Last 12 Hours</option>
                                 </select>
                             </div>
                         </div>
-                        <div class="chart-wrapper">
-                            <canvas id="latencyChart"></canvas>
-                        </div>
-                        <div class="instrument-footer">HISTORICAL LATENCY</div>
-                    </div>
 
-                    <div
+                        <div class="chart-wrapper">
+                            <canvas
+                                id="latencyChart"
+                                aria-label="Historical latency chart"
+                                role="img"
+                            ></canvas>
+                        </div>
+
+                        <div class="instrument-footer">Historical Latency</div>
+                    </section>
+
+                    <!-- Speedtest Chart -->
+                    <section
                         id="speedtestChartSection"
                         class="chart-container hidden"
+                        aria-label="Speedtest history"
                     >
-                        <!--<div class="instrument-label">Speedtest History (Mbps)</div>-->
                         <div class="chart-wrapper">
-                            <canvas id="speedtestChart"></canvas>
+                            <canvas
+                                id="speedtestChart"
+                                aria-label="Historical speedtest chart"
+                                role="img"
+                            ></canvas>
                         </div>
-                        <div class="instrument-footer">SPEEDTEST</div>
-                    </div>
+
+                        <div class="instrument-footer">Speedtest</div>
+                    </section>
                 </section>
             </main>
         </div>
