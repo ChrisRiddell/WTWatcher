@@ -261,6 +261,15 @@ func (fm *FileManager) ReadMetrics() (MetricsFile, error) {
 	return fm.readRaw()
 }
 
+// loadTaskData returns the active in-memory dataset when a task is running, or reads
+// and returns the current metrics.json from disk. Caller must hold fm.mu.
+func (fm *FileManager) loadTaskData() (MetricsFile, error) {
+	if fm.inTask && fm.taskData != nil {
+		return fm.taskData, nil
+	}
+	return fm.readRaw()
+}
+
 // AddLatency records a latency result under the given UTC timestamp, creating date/time slots
 // as needed while maintaining target insertion order. If a task session is active, changes
 // are staged to the .tmp file; otherwise they are written atomically to metrics.json immediately.
@@ -268,15 +277,9 @@ func (fm *FileManager) AddLatency(ts time.Time, name string, entry LatencyEntry)
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	var data MetricsFile
-	var err error
-	if fm.inTask && fm.taskData != nil {
-		data = fm.taskData
-	} else {
-		data, err = fm.readRaw()
-		if err != nil {
-			return err
-		}
+	data, err := fm.loadTaskData()
+	if err != nil {
+		return err
 	}
 
 	dateKey, timeKey := formatKeys(ts)
@@ -314,15 +317,9 @@ func (fm *FileManager) AddSpeedtest(ts time.Time, entry SpeedtestEntry) error {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	var data MetricsFile
-	var err error
-	if fm.inTask && fm.taskData != nil {
-		data = fm.taskData
-	} else {
-		data, err = fm.readRaw()
-		if err != nil {
-			return err
-		}
+	data, err := fm.loadTaskData()
+	if err != nil {
+		return err
 	}
 
 	dateKey, timeKey := formatKeys(ts)

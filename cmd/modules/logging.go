@@ -3,7 +3,6 @@ package modules
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,8 +11,28 @@ import (
 	"time"
 )
 
-// logFileNames defines the dedicated log filenames managed by the Logger.
-var logFileNames = []string{"info.log", "warning.log", "error.log"}
+// logFileDef pairs a log-file name with the minimum slog level it captures.
+type logFileDef struct {
+	name  string
+	level slog.Level
+}
+
+// logFileDefs defines the three dedicated log files managed by the Logger.
+var logFileDefs = []logFileDef{
+	{"info.log", slog.LevelInfo},
+	{"warning.log", slog.LevelWarn},
+	{"error.log", slog.LevelError},
+}
+
+// logFileNames is kept for use by Rotate so it can iterate file names without
+// re-exporting the internal logFileDef type.
+var logFileNames = func() []string {
+	names := make([]string, len(logFileDefs))
+	for i, d := range logFileDefs {
+		names[i] = d.name
+	}
+	return names
+}()
 
 // Logger wraps three distinct slog.Logger instances routing structured JSON output to
 // dedicated log files for info, warning, and error levels.
@@ -36,9 +55,7 @@ func NewLogger(logDir string) (*Logger, error) {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 
-	l := &Logger{
-		logDir: logDir,
-	}
+	l := &Logger{logDir: logDir}
 
 	if err := l.openFiles(); err != nil {
 		return nil, err
@@ -47,49 +64,24 @@ func NewLogger(logDir string) (*Logger, error) {
 	return l, nil
 }
 
-// openFiles opens the three level-specific log files and configures their JSON slog handlers.
+// openFiles opens each level-specific log file and wires up its JSON slog handler.
 // Caller must hold l.mu if called after Logger initialization.
 func (l *Logger) openFiles() error {
-	var files []*os.File
-	cleanup := func() {
-		for _, f := range files {
-			_ = f.Close()
-		}
-	}
+	loggers := []*(*slog.Logger){&l.info, &l.warning, &l.errLog}
 
-	open := func(name string) (*os.File, error) {
-		f, err := os.OpenFile(filepath.Join(l.logDir, name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	var files []*os.File
+	for i, def := range logFileDefs {
+		f, err := os.OpenFile(filepath.Join(l.logDir, def.name), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", name, err)
+			for _, prev := range files {
+				_ = prev.Close()
+			}
+			return fmt.Errorf("open %s: %w", def.name, err)
 		}
 		files = append(files, f)
-		return f, nil
+		*loggers[i] = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{Level: def.level}))
 	}
 
-	infoFile, err := open("info.log")
-	if err != nil {
-		return err
-	}
-
-	warnFile, err := open("warning.log")
-	if err != nil {
-		cleanup()
-		return err
-	}
-
-	errFile, err := open("error.log")
-	if err != nil {
-		cleanup()
-		return err
-	}
-
-	newHandler := func(w io.Writer, level slog.Level) *slog.Logger {
-		return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level}))
-	}
-
-	l.info = newHandler(infoFile, slog.LevelInfo)
-	l.warning = newHandler(warnFile, slog.LevelWarn)
-	l.errLog = newHandler(errFile, slog.LevelError)
 	l.files = files
 	return nil
 }

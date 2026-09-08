@@ -144,23 +144,96 @@ func ParseConfig(data []byte) (*Config, error) {
 	return &Config{Schedule: sched, Ping: ping, Speedtest: speedtest, Addresses: addrs}, nil
 }
 
+// ─── interval parsing ─────────────────────────────────────────────────────
+
+// unitDef describes an accepted time unit with its name variants and its multiplier in seconds.
+type unitDef struct {
+	names      []string // accepted tokens, e.g. {"minute", "minutes"}
+	multiplier int64    // seconds per unit
+}
+
+// parseInterval is the single generic interval parser used by all schedule fields.
+//
+// Format: "<positive-integer> <Unit>" where Unit must be one of the entries in units.
+// If allowOFF is true, the literal string "OFF" (case-insensitive) returns 0 with no error.
+// The field argument is used verbatim in error messages so callers can produce precise diagnostics.
+func parseInterval(s, field string, allowOFF bool, units []unitDef) (int64, error) {
+	s = strings.TrimSpace(s)
+
+	if allowOFF && strings.EqualFold(s, "off") {
+		return 0, nil
+	}
+
+	parts := strings.Fields(s)
+	if len(parts) != 2 {
+		if allowOFF {
+			return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> <Unit>\" or \"OFF\")", field, s)
+		}
+		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> <Unit>\")", field, s)
+	}
+
+	n, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
+	}
+
+	token := strings.ToLower(parts[1])
+	for _, u := range units {
+		for _, name := range u.names {
+			if token == name {
+				return n * u.multiplier, nil
+			}
+		}
+	}
+
+	// Build a human-readable list of accepted units for the error message.
+	// Use the plural name (last entry) with its first letter uppercased.
+	accepted := make([]string, 0, len(units))
+	for _, u := range units {
+		plural := u.names[len(u.names)-1]
+		accepted = append(accepted, strings.ToUpper(plural[:1])+plural[1:])
+	}
+	hint := strings.Join(accepted, " or ")
+	if allowOFF {
+		hint += " or OFF"
+	}
+	return 0, fmt.Errorf("%s: unknown unit %q (use %s)", field, parts[1], hint)
+}
+
+// Shared unit definitions reused across multiple schedule fields.
+var (
+	unitsMinutesHours = []unitDef{
+		{names: []string{"minute", "minutes"}, multiplier: 60},
+		{names: []string{"hour", "hours"}, multiplier: 3600},
+	}
+	unitsHoursOnly = []unitDef{
+		{names: []string{"hour", "hours"}, multiplier: 3600},
+	}
+	unitsDaysOnly = []unitDef{
+		{names: []string{"day", "days"}, multiplier: 86400},
+	}
+	unitsSecondsOnly = []unitDef{
+		{names: []string{"second", "seconds"}, multiplier: 1},
+	}
+)
+
 // ─── internal helpers ──────────────────────────────────────────────────────
 
 // parseSchedule validates each interval string and converts durations to whole seconds.
 func parseSchedule(r rawSchedule) (Schedule, error) {
-	ping, err := parsePingScheduleInterval(r.Ping, "Schedule.Ping")
+	ping, err := parseInterval(r.Ping, "Schedule.Ping", false, unitsMinutesHours)
 	if err != nil {
 		return Schedule{}, err
 	}
-	speedtest, err := parseSpeedtestScheduleInterval(r.Speedtest, "Schedule.Speedtest")
+	speedtest, err := parseInterval(r.Speedtest, "Schedule.Speedtest", true, unitsHoursOnly)
 	if err != nil {
 		return Schedule{}, err
 	}
-	archiving, err := parseArchivingInterval(r.Archiving, "Schedule.Archiving")
+	archiving, err := parseInterval(r.Archiving, "Schedule.Archiving", false, unitsDaysOnly)
 	if err != nil {
 		return Schedule{}, err
 	}
-	logRotation, err := parseLogRotationInterval(r.LogRotation, "Schedule.LogRotation")
+	logRotation, err := parseInterval(r.LogRotation, "Schedule.LogRotation", true, unitsDaysOnly)
 	if err != nil {
 		return Schedule{}, err
 	}
@@ -182,7 +255,7 @@ func parsePing(r rawPing) (Ping, error) {
 	if r.Timeout == "" {
 		return Ping{}, fmt.Errorf("Ping.Timeout: duration string is required (e.g. \"10 Seconds\")")
 	}
-	timeoutSec, err := parsePingTimeoutInterval(r.Timeout, "Ping.Timeout")
+	timeoutSec, err := parseInterval(r.Timeout, "Ping.Timeout", false, unitsSecondsOnly)
 	if err != nil {
 		return Ping{}, err
 	}
@@ -228,114 +301,6 @@ func parseSpeedtest(r rawSpeedtestConfig) (Speedtest, error) {
 	}
 
 	return Speedtest{ServerID: val}, nil
-}
-
-// parsePingScheduleInterval parses duration strings specifically for Schedule.Ping.
-// It supports "Minutes" and "Hours" with no option for "OFF".
-func parsePingScheduleInterval(s, field string) (int64, error) {
-	s = strings.TrimSpace(s)
-	parts := strings.Fields(s)
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Minutes|Hours\")", field, s)
-	}
-	n, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
-	}
-	switch strings.ToLower(parts[1]) {
-	case "minute", "minutes":
-		return n * 60, nil
-	case "hour", "hours":
-		return n * 3600, nil
-	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Minutes or Hours)", field, parts[1])
-	}
-}
-
-// parseSpeedtestScheduleInterval parses duration strings specifically for Schedule.Speedtest.
-// It supports "OFF" (returns 0) and "Hours".
-func parseSpeedtestScheduleInterval(s, field string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if strings.EqualFold(s, "off") {
-		return 0, nil
-	}
-	parts := strings.Fields(s)
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Hours\" or \"OFF\")", field, s)
-	}
-	n, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
-	}
-	switch strings.ToLower(parts[1]) {
-	case "hour", "hours":
-		return n * 3600, nil
-	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Hours or OFF)", field, parts[1])
-	}
-}
-
-// parseArchivingInterval parses duration strings specifically for Schedule.Archiving.
-// It supports "Days" with no option for "OFF".
-func parseArchivingInterval(s, field string) (int64, error) {
-	s = strings.TrimSpace(s)
-	parts := strings.Fields(s)
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Days\")", field, s)
-	}
-	n, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
-	}
-	switch strings.ToLower(parts[1]) {
-	case "day", "days":
-		return n * 86400, nil
-	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Days)", field, parts[1])
-	}
-}
-
-// parseLogRotationInterval parses duration strings specifically for Schedule.LogRotation.
-// It supports "OFF" (returns 0) and "Days".
-func parseLogRotationInterval(s, field string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if strings.EqualFold(s, "off") {
-		return 0, nil
-	}
-	parts := strings.Fields(s)
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Days\" or \"OFF\")", field, s)
-	}
-	n, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
-	}
-	switch strings.ToLower(parts[1]) {
-	case "day", "days":
-		return n * 86400, nil
-	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Days or OFF)", field, parts[1])
-	}
-}
-
-// parsePingTimeoutInterval parses duration strings specifically for Ping.Timeout.
-// It supports "Seconds" with no option for "OFF".
-func parsePingTimeoutInterval(s, field string) (int64, error) {
-	s = strings.TrimSpace(s)
-	parts := strings.Fields(s)
-	if len(parts) != 2 {
-		return 0, fmt.Errorf("%s: invalid interval %q (expected \"<N> Seconds\")", field, s)
-	}
-	n, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s: invalid number %q", field, parts[0])
-	}
-	switch strings.ToLower(parts[1]) {
-	case "second", "seconds":
-		return n, nil
-	default:
-		return 0, fmt.Errorf("%s: unknown unit %q (use Seconds)", field, parts[1])
-	}
 }
 
 // parseAddresses walks the yaml.Node AST of the Addresses mapping in document order,

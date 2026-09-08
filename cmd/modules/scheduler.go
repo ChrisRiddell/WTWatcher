@@ -98,29 +98,13 @@ func (s *Scheduler) Start() {
 	})
 
 	addTask("archive", s.cfg.Schedule.ArchivingSeconds, func(ctx context.Context) {
-		ts := time.Now().UTC()
-		fmt.Printf("[archive] starting archiving run at %s\n", formatConsoleTime(ts))
-
-		if err := s.fm.Archive(s.cfg.Schedule.ArchivingSeconds); err != nil {
-			s.logger.Error("archiving failed", "error", err)
-			fmt.Printf("[archive] FAILED: %v\n", err)
-		} else {
-			s.logger.Info("archiving completed")
-			fmt.Println("[archive] run complete")
-		}
+		s.runSimpleTask("archive", func() error {
+			return s.fm.Archive(s.cfg.Schedule.ArchivingSeconds)
+		})
 	})
 
 	addTask("log rotate", s.cfg.Schedule.LogRotationSeconds, func(ctx context.Context) {
-		ts := time.Now().UTC()
-		fmt.Printf("[log rotate] starting log rotation run at %s\n", formatConsoleTime(ts))
-
-		if err := s.logger.Rotate(); err != nil {
-			s.logger.Error("log rotation failed", "error", err)
-			fmt.Printf("[log rotate] FAILED: %v\n", err)
-		} else {
-			s.logger.Info("log rotation completed")
-			fmt.Println("[log rotate] run complete")
-		}
+		s.runSimpleTask("log rotate", s.logger.Rotate)
 	})
 
 	// Display initial scheduled next run times for all registered tasks.
@@ -174,6 +158,19 @@ func (s *Scheduler) Stop() {
 	}
 
 	s.wg.Wait()
+}
+
+// runSimpleTask executes fn, logging and printing its start time, success, or failure.
+// It is used by archive and log-rotate closures which share this identical pattern.
+func (s *Scheduler) runSimpleTask(name string, fn func() error) {
+	fmt.Printf("[%s] starting run at %s\n", name, formatConsoleTime(time.Now().UTC()))
+	if err := fn(); err != nil {
+		s.logger.Error(name+" failed", "error", err)
+		fmt.Printf("[%s] FAILED: %v\n", name, err)
+	} else {
+		s.logger.Info(name + " completed")
+		fmt.Printf("[%s] run complete\n", name)
+	}
 }
 
 // runWithTimeout runs an individual task with a hard execution deadline (taskTimeout).

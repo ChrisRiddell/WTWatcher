@@ -39,21 +39,24 @@ func Run() {
 	}
 	defer logger.Close()
 
+	// fatal logs an error and exits. Used only during startup before the app is running.
+	fatal := func(msg string, err error) {
+		logger.Error(msg, "error", err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", msg, err)
+		os.Exit(1)
+	}
+
 	// Load and validate user configuration from the specified YAML file.
 	cfg, err := modules.LoadConfig(*configFlag)
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		fatal("config error", err)
 	}
 	logger.Info("configuration loaded successfully", "config", *configFlag)
 
 	// Initialize thread-safe file manager for reading and writing metrics.json and archiving.
 	fm, err := modules.NewFileManager("./public/metrics.json", "./archive", logger)
 	if err != nil {
-		logger.Error("failed to initialise file manager", "error", err)
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		fatal("failed to initialise file manager", err)
 	}
 
 	// Initialize and launch the periodic task scheduler (pings, speedtests, archiving).
