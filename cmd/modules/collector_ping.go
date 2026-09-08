@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -167,17 +168,19 @@ func doPing(ctx context.Context, host, proto string, pingCfg Ping) (LatencyEntry
 		network = "ip6"
 	}
 
-	// Check if running as root (UID 0).
+	// Determine socket privilege mode.
+	// On Windows, pro-bing requires SetPrivileged(true) to avoid protocol configuration errors;
+	// despite the method name, Windows allows this without elevated administrator rights.
 	// On Linux/macOS, non-root users cannot open raw ICMP sockets without special capabilities,
-	// so we default to unprivileged UDP-based ICMP when not running as root.
-	privileged := os.Getuid() == 0
+	// so we default to unprivileged UDP-based ICMP when not running as root (UID 0).
+	privileged := isPrivilegedMode()
 
 	return runPinger(ctx, host, network, proto, privileged, pingCfg)
 }
 
 // runPinger initializes and executes a pro-bing pinger instance.
 // If privileged raw socket mode fails with a permission error, it automatically retries
-// using unprivileged ICMP datagram sockets.
+// using unprivileged ICMP datagram sockets (on supported operating systems).
 func runPinger(ctx context.Context, host, network, proto string, privileged bool, pingCfg Ping) (LatencyEntry, error) {
 	timeout := time.Duration(pingCfg.TimeoutSeconds) * time.Second
 	pCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -200,7 +203,8 @@ func runPinger(ctx context.Context, host, network, proto string, privileged bool
 		if err != nil {
 			// On permission denial (e.g. non-root on Darwin or missing CAP_NET_RAW on Linux),
 			// transparently retry using unprivileged UDP ICMP.
-			if privileged && isPermissionError(err) {
+			// On Windows, unprivileged mode is unsupported by the OS socket API, so retry is skipped.
+			if shouldFallbackToUnprivileged(runtime.GOOS, privileged, err) {
 				return runPinger(ctx, host, network, proto, false, pingCfg)
 			}
 			return LatencyEntry{}, fmt.Errorf("ping %q: %w", host, err)
@@ -292,6 +296,33 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 	}
 	frac := rank - float64(lo)
 	return sorted[lo] + time.Duration(frac*float64(sorted[hi]-sorted[lo]))
+}
+
+// isPrivilegedMode determines the initial socket privilege mode for ICMP probing.
+func isPrivilegedMode() bool {
+	return checkPrivilegedMode(runtime.GOOS, os.Getuid())
+}
+
+// checkPrivilegedMode returns whether raw socket privileges should be requested for a given OS and UID.
+// On Windows, pro-bing requires SetPrivileged(true) to avoid:
+// "socket: The requested protocol has not been configured into the system, or no implementation for it exists."
+// Despite the method name, this works on Windows without elevating administrator privileges.
+// On Linux/macOS, non-root users cannot open raw ICMP sockets without special capabilities,
+// so we default to unprivileged UDP-based ICMP when not running as root (UID 0).
+func checkPrivilegedMode(goos string, uid int) bool {
+	if goos == "windows" {
+		return true
+	}
+	return uid == 0
+}
+
+// shouldFallbackToUnprivileged reports whether a failed privileged ping should retry using unprivileged UDP ICMP.
+// Windows does not support unprivileged ICMP datagram sockets, so fallback is only attempted on non-Windows platforms.
+func shouldFallbackToUnprivileged(goos string, privileged bool, err error) bool {
+	if goos == "windows" {
+		return false
+	}
+	return privileged && isPermissionError(err)
 }
 
 // isPermissionError reports whether an error originates from an OS socket permission denial.

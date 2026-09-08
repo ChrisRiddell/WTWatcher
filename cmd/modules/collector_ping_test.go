@@ -98,6 +98,64 @@ func TestIsPermissionError(t *testing.T) {
 	}
 }
 
+func TestCheckPrivilegedMode(t *testing.T) {
+	tests := []struct {
+		name string
+		goos string
+		uid  int
+		want bool
+	}{
+		{name: "windows non-root", goos: "windows", uid: -1, want: true},
+		{name: "windows admin/root", goos: "windows", uid: 0, want: true},
+		{name: "windows normal uid", goos: "windows", uid: 1000, want: true},
+		{name: "darwin root", goos: "darwin", uid: 0, want: true},
+		{name: "darwin non-root", goos: "darwin", uid: 501, want: false},
+		{name: "linux root", goos: "linux", uid: 0, want: true},
+		{name: "linux non-root", goos: "linux", uid: 1000, want: false},
+		{name: "freebsd non-root", goos: "freebsd", uid: 1001, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkPrivilegedMode(tc.goos, tc.uid)
+			if got != tc.want {
+				t.Errorf("checkPrivilegedMode(%q, %d): want %v, got %v", tc.goos, tc.uid, tc.want, got)
+			}
+		})
+	}
+}
+
+func TestShouldFallbackToUnprivileged(t *testing.T) {
+	permErr := os.ErrPermission
+	otherErr := errors.New("timeout or network unreachable")
+
+	tests := []struct {
+		name       string
+		goos       string
+		privileged bool
+		err        error
+		want       bool
+	}{
+		{name: "windows privileged permission error (no fallback)", goos: "windows", privileged: true, err: permErr, want: false},
+		{name: "windows unprivileged error (no fallback)", goos: "windows", privileged: false, err: permErr, want: false},
+		{name: "darwin privileged permission error (fallback)", goos: "darwin", privileged: true, err: permErr, want: true},
+		{name: "darwin already unprivileged (no fallback)", goos: "darwin", privileged: false, err: permErr, want: false},
+		{name: "darwin non-permission error (no fallback)", goos: "darwin", privileged: true, err: otherErr, want: false},
+		{name: "linux privileged permission error (fallback)", goos: "linux", privileged: true, err: permErr, want: true},
+		{name: "linux already unprivileged (no fallback)", goos: "linux", privileged: false, err: permErr, want: false},
+		{name: "linux non-permission error (no fallback)", goos: "linux", privileged: true, err: otherErr, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldFallbackToUnprivileged(tc.goos, tc.privileged, tc.err)
+			if got != tc.want {
+				t.Errorf("shouldFallbackToUnprivileged(%q, %v, %v): want %v, got %v", tc.goos, tc.privileged, tc.err, tc.want, got)
+			}
+		})
+	}
+}
+
 func TestFilterAnomalyRTTs(t *testing.T) {
 	ms := func(n int64) time.Duration { return time.Duration(n) * time.Millisecond }
 	threshold := int64(2000) // 2 000 ms default
