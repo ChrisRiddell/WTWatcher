@@ -157,6 +157,9 @@ Addresses:
   # Google:
   #   Domain: google.com
   #   Protocol: Both # IPv4, IPv6 or Both
+
+Version: 0.1.0 # Do not modify (Required for version upgrades)
+
 `
 		if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
 			return fmt.Errorf("failed to create default config file %s: %w", configPath, err)

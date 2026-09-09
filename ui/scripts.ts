@@ -120,11 +120,11 @@ const TIME_FILTER_DURATIONS = {
 
 const LATENCY_CONFIG = {
   high: {
-    abs: 75,
+    abs: 40,
     relative: 0.75,
   },
   elevated: {
-    abs: 35,
+    abs: 20,
     relative: 0.35,
   },
 } as const;
@@ -642,6 +642,13 @@ function getLatencyStatus(baseline: number, latest: number): LatencyStatus {
 
   const delta = latest - baseline;
 
+  if (delta <= 0) {
+    return {
+      cls: "status-success",
+      label: "Normal",
+    };
+  }
+
   const { high, elevated } = LATENCY_CONFIG;
 
   if (delta > Math.max(high.abs, baseline * high.relative)) {
@@ -702,7 +709,7 @@ function computeLatencyStats(
 
   const rawEntries = latestPoint.latency?.[target] ?? [];
 
-  if (!targetHistory) {
+  if (rawEntries.length === 0) {
     return {
       target,
       latest: 0,
@@ -718,9 +725,11 @@ function computeLatencyStats(
         protocolFilter === "IPv4 + IPv6" || entry.protocol === protocolFilter,
     )
     .map((entry): LatencyStatEntry => {
-      const values = targetHistory.get(entry.protocol) ?? [entry.average];
-
-      const baseline = average(values);
+      const priorValues = targetHistory?.get(entry.protocol);
+      const baseline =
+        priorValues && priorValues.length > 0
+          ? average(priorValues)
+          : entry.average;
       const status = getLatencyStatus(baseline, entry.average);
 
       return {
@@ -742,13 +751,17 @@ function computeAllLatencyStats(
   data: readonly ParsedDataPoint[],
   protocolFilter: ProtocolFilter,
 ): CalculatedLatencyStat[] {
-  const history = buildLatencyHistory(data);
-
   const latestPoint = [...data].reverse().find((point) => point.latency);
 
-  if (!latestPoint?.latency || history.size === 0) {
+  if (!latestPoint?.latency) {
     return [];
   }
+
+  const priorData = data.filter(
+    (point) =>
+      point.timestamp < latestPoint.timestamp && point.latency !== undefined,
+  );
+  const history = buildLatencyHistory(priorData);
 
   const targetOrder = new Set<string>([
     ...Object.keys(latestPoint.latency),

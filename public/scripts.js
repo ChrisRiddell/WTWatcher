@@ -15,11 +15,11 @@ const TIME_FILTER_DURATIONS = {
 };
 const LATENCY_CONFIG = {
     high: {
-        abs: 75,
+        abs: 40,
         relative: 0.75,
     },
     elevated: {
-        abs: 35,
+        abs: 20,
         relative: 0.35,
     },
 };
@@ -331,6 +331,12 @@ function getLatencyStatus(baseline, latest) {
         };
     }
     const delta = latest - baseline;
+    if (delta <= 0) {
+        return {
+            cls: "status-success",
+            label: "Normal",
+        };
+    }
     const { high, elevated } = LATENCY_CONFIG;
     if (delta > Math.max(high.abs, baseline * high.relative)) {
         return {
@@ -376,7 +382,7 @@ function getWorstStatus(entries) {
 function computeLatencyStats(target, history, latestPoint, protocolFilter) {
     const targetHistory = history.get(target);
     const rawEntries = latestPoint.latency?.[target] ?? [];
-    if (!targetHistory) {
+    if (rawEntries.length === 0) {
         return {
             target,
             latest: 0,
@@ -388,8 +394,10 @@ function computeLatencyStats(target, history, latestPoint, protocolFilter) {
     const latestEntries = rawEntries
         .filter((entry) => protocolFilter === "IPv4 + IPv6" || entry.protocol === protocolFilter)
         .map((entry) => {
-        const values = targetHistory.get(entry.protocol) ?? [entry.average];
-        const baseline = average(values);
+        const priorValues = targetHistory?.get(entry.protocol);
+        const baseline = priorValues && priorValues.length > 0
+            ? average(priorValues)
+            : entry.average;
         const status = getLatencyStatus(baseline, entry.average);
         return {
             ...entry,
@@ -405,11 +413,12 @@ function computeLatencyStats(target, history, latestPoint, protocolFilter) {
     };
 }
 function computeAllLatencyStats(data, protocolFilter) {
-    const history = buildLatencyHistory(data);
     const latestPoint = [...data].reverse().find((point) => point.latency);
-    if (!latestPoint?.latency || history.size === 0) {
+    if (!latestPoint?.latency) {
         return [];
     }
+    const priorData = data.filter((point) => point.timestamp < latestPoint.timestamp && point.latency !== undefined);
+    const history = buildLatencyHistory(priorData);
     const targetOrder = new Set([
         ...Object.keys(latestPoint.latency),
         ...history.keys(),
